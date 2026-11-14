@@ -1,0 +1,22 @@
+# Compiled binaries and build outputs
+/deckjam
+/dist/
+*.exe
+
+# Local runtime DB and persistent data
+*.db
+*.db-wal
+*.db-shm
+.data/
+data/
+
+# OS and environment cruft
+.DS_Store
+Thumbs.db
+
+# Editor and IDE configurations
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

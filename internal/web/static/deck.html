@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DeckJam Stage — Steam Deck & TV View</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <meta name="theme-color" content="#0d0f11">
+  <link rel="stylesheet" href="/deck.css">
+</head>
+<body>
+
+  <div class="deck-stage-layout">
+
+    <!-- LEFT STAGE: Hero Playback & Tactile Hardware Transport -->
+    <main class="left-stage">
+      <header class="stage-header">
+        <div class="stage-brand">
+          <img src="/icon.svg" alt="DeckJam" class="stage-brand-logo">
+          <div class="stage-room-name" id="stageRoomName">Steam Deck Jam</div>
+        </div>
+        <div class="backend-pill" id="backendPill">
+          <span class="backend-dot" id="backendDot"></span>
+          <span id="backendName">go-librespot Ready</span>
+        </div>
+      </header>
+
+      <!-- Center Hero Area -->
+      <section class="np-center-hero">
+        <div class="np-art-frame">
+          <img id="stageArtwork" class="np-art-img" src="/icon.svg" alt="Album Cover">
+        </div>
+        <div class="np-info-col">
+          <div class="np-badge-row">
+            <div class="np-status-badge" id="stageStatusBadge">
+              <!-- Animated Equalizer Bars -->
+              <div class="eq-container" id="stageEq">
+                <div class="eq-bar"></div>
+                <div class="eq-bar"></div>
+                <div class="eq-bar"></div>
+                <div class="eq-bar"></div>
+              </div>
+              <span id="stageStatusText">Ready for Tunes</span>
+            </div>
+            <div id="stageQueueModeBadge" class="backend-pill" style="font-size:11px;">Fair Jam</div>
+          </div>
+          <h1 class="np-track-title" id="stageTrackTitle">Waiting for Party Queue...</h1>
+          <div class="np-artist-name" id="stageArtistName">Scan QR code to queue your tracks</div>
+          <div class="np-album-name" id="stageAlbumName">Local-first party jukebox</div>
+          <div class="np-guest-credit" id="stageGuestCredit" style="display:none;">
+            <span>Added by</span>
+            <span class="guest-pill" id="stageGuestName">Guest</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Full-Width Smooth Client-Interpolated Progress Bar -->
+      <section class="stage-progress-section">
+        <div class="stage-progress-track">
+          <div class="stage-progress-fill" id="stageProgressFill"></div>
+        </div>
+        <div class="stage-timestamps">
+          <span id="stageElapsed">0:00</span>
+          <span id="stageDuration">0:00</span>
+        </div>
+      </section>
+
+      <!-- Large Touch Hardware Transport Buttons (>=56px tall for Steam Deck Screen) -->
+      <footer class="stage-transport-row">
+        <div class="transport-main-cluster">
+          <button id="stageBtnRestart" class="hw-touch-btn hw-transport-btn" title="Restart Track" aria-label="Restart Track">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+            <span>Restart</span>
+          </button>
+          <button id="stageBtnPlayPause" class="hw-touch-btn hw-transport-btn btn-large-play" title="Play/Pause" aria-label="Play or Pause">
+            <svg id="stagePlayPauseIcon" viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            <span id="stagePlayPauseLabel">Play</span>
+          </button>
+          <button id="stageBtnSkip" class="hw-touch-btn hw-transport-btn" title="Skip to Next Track" aria-label="Skip Track">
+            <span>Skip</span>
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+
+        <!-- Volume Controls -->
+        <div class="transport-volume-cluster">
+          <button id="stageBtnVolDown" class="hw-touch-btn vol-btn" title="Volume Down" aria-label="Volume Down">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 13H5v-2h14v2z"/></svg>
+          </button>
+          <div class="vol-readout" id="stageVolReadout">80%</div>
+          <button id="stageBtnVolUp" class="hw-touch-btn vol-btn" title="Volume Up" aria-label="Volume Up">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          </button>
+        </div>
+      </footer>
+    </main>
+
+    <!-- RIGHT STAGE: Join QR & Live Up Next Queue -->
+    <aside class="right-stage">
+      
+      <!-- Party Join QR Box -->
+      <div class="join-qr-card">
+        <div class="qr-white-frame">
+          <img id="stageQrImg" src="" alt="Party QR Code">
+        </div>
+        <div class="join-info-col">
+          <div class="join-title">Scan to Join Jam</div>
+          <div class="join-url-large" id="stageJoinUrlText">http://steamdeck.local:8080</div>
+          <div class="join-hint">No app install required &bull; Works over Wi-Fi / Hotspot</div>
+          <!-- Host PIN Peek Pill -->
+          <div class="host-pin-pill" id="stagePinPill" title="Tap to toggle PIN visibility">
+            <span>Host PIN:</span>
+            <strong id="stagePinDisplay">••••</strong>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Up Next Queue List -->
+      <section class="stage-queue-section">
+        <div class="queue-section-header">
+          <div class="queue-header-title">
+            <span>Up Next</span>
+            <span class="queue-pill-count" id="stageQueueCount">0</span>
+          </div>
+          <div id="stageOnlineGuests" style="font-family:var(--font-mono); font-size:12px; color:var(--deck-text-tertiary);">
+            1 guest online
+          </div>
+        </div>
+
+        <div class="stage-queue-list" id="stageQueueList">
+          <div style="padding:40px 10px; text-align:center; color:var(--deck-text-tertiary); font-size:13px;">
+            Queue is empty. Scan QR on your phone to add songs!
+          </div>
+        </div>
+      </section>
+
+    </aside>
+
+  </div>
+
+  <script src="/deck.js"></script>
+</body>
+</html>

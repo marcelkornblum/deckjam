@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background linear gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#242830"/>
+      <stop offset="100%" stop-color="#111315"/>
+    </linearGradient>
+    <!-- Vinyl metal finish gradient -->
+    <linearGradient id="vinylGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1c1f24"/>
+      <stop offset="50%" stop-color="#141619"/>
+      <stop offset="100%" stop-color="#181a1f"/>
+    </linearGradient>
+    <!-- Emerald Accent Gradient -->
+    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#24b47e"/>
+      <stop offset="100%" stop-color="#1ed760"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle Base Frame -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGrad)" stroke="#323842" stroke-width="6"/>
+  <!-- Bezel inner inset highlight -->
+  <rect x="22" y="22" width="468" height="468" rx="102" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="2"/>
+
+  <!-- Vinyl Grooves / Jog Dial Outer Wheel -->
+  <circle cx="256" cy="256" r="180" fill="url(#vinylGrad)" stroke="#2b313a" stroke-width="5"/>
+  <circle cx="256" cy="256" r="162" fill="none" stroke="#22262d" stroke-width="2"/>
+  <circle cx="256" cy="256" r="146" fill="none" stroke="#262b33" stroke-width="2.5"/>
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#1f2329" stroke-width="2"/>
+  <circle cx="256" cy="256" r="114" fill="none" stroke="#262b33" stroke-width="2.5"/>
+  <circle cx="256" cy="256" r="98" fill="none" stroke="#22262d" stroke-width="2"/>
+
+  <!-- Center Hub / Label -->
+  <circle cx="256" cy="256" r="74" fill="#181b20" stroke="#363c46" stroke-width="4"/>
+  <circle cx="256" cy="256" r="54" fill="url(#emeraldGrad)"/>
+
+  <!-- Tactile Center Spindle Hole -->
+  <circle cx="256" cy="256" r="18" fill="#111315" stroke="#15171a" stroke-width="3"/>
+  <circle cx="256" cy="256" r="10" fill="#0b0c0e"/>
+
+  <!-- Steam Deck Thumbstick / Play Arrow Marks -->
+  <path d="M 120 70 L 150 70 M 135 55 L 135 85" stroke="#4a5260" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="372" cy="70" r="8" fill="#4a5260"/>
+  <circle cx="396" cy="70" r="8" fill="#4a5260"/>
+
+  <!-- Hardware Status LED Indicator Dot (Active Emerald) -->
+  <circle cx="256" cy="442" r="7" fill="#1ed760"/>
+  <circle cx="256" cy="442" r="12" fill="none" stroke="rgba(30,215,96,0.3)" stroke-width="2"/>
+</svg>

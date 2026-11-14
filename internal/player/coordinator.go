@@ -1,0 +1,295 @@
+package player
+
+import (
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/marcelkornblum/deckjam/internal/store"
+)
+
+// Coordinator coordinates between the active player backend, the SQLite store, and queue advancement.
+type Coordinator struct {
+	store        *store.Store
+	librespot    *LibrespotBackend
+	mpris        *MPRISBackend
+	mock         *MockBackend
+
+	modeMu       sync.RWMutex
+	activeMode   string // "auto", "librespot", "mpris", "mock"
+
+	actionMu     sync.Mutex // serializes track transitions and queue popping
+	listenersMu  sync.RWMutex
+	listeners    []chan struct{}
+}
+
+// NewCoordinator creates a new multi-backend Player Coordinator.
+func NewCoordinator(st *store.Store, librespotURL string, configuredBackend string) *Coordinator {
+	if configuredBackend == "" {
+		configuredBackend = "auto"
+	}
+
+	c := &Coordinator{
+		store:      st,
+		activeMode: configuredBackend,
+	}
+
+	onTrackEnded := func() {
+		go c.HandleTrackEnded()
+	}
+
+	c.librespot = NewLibrespotBackend(librespotURL, onTrackEnded)
+	c.mpris = NewMPRISBackend(onTrackEnded)
+	c.mock = NewMockBackend(onTrackEnded)
+
+	return c
+}
+
+// SetBackend changes configured backend mode.
+func (c *Coordinator) SetBackend(mode string) {
+	c.modeMu.Lock()
+	defer c.modeMu.Unlock()
+	c.activeMode = mode
+}
+
+// GetActiveBackend determines and returns the active backend based on configuration and availability.
+func (c *Coordinator) GetActiveBackend() Backend {
+	c.modeMu.RLock()
+	mode := c.activeMode
+	c.modeMu.RUnlock()
+
+	switch mode {
+	case "librespot":
+		return c.librespot
+	case "mpris":
+		return c.mpris
+	case "mock":
+		return c.mock
+	case "auto":
+		if c.librespot.Available() {
+			return c.librespot
+		}
+		if c.mpris.Available() {
+			return c.mpris
+		}
+		return c.mock
+	default:
+		return c.mock
+	}
+}
+
+// PlaySong plays the specified Spotify URI on the active backend.
+func (c *Coordinator) PlaySong(uri string, durationMS int) error {
+	backend := c.GetActiveBackend()
+	if mock, ok := backend.(*MockBackend); ok {
+		mock.SetTrackDuration(durationMS)
+	}
+	return backend.Play(uri)
+}
+
+// Pause pauses playback.
+func (c *Coordinator) Pause() error {
+	return c.GetActiveBackend().Pause()
+}
+
+// Resume resumes playback.
+func (c *Coordinator) Resume() error {
+	return c.GetActiveBackend().Resume()
+}
+
+// PlayPause toggles playback.
+func (c *Coordinator) PlayPause() error {
+	return c.GetActiveBackend().PlayPause()
+}
+
+// Stop stops playback.
+func (c *Coordinator) Stop() error {
+	return c.GetActiveBackend().Stop()
+}
+
+// Seek seeks to positionMS.
+func (c *Coordinator) Seek(positionMS int) error {
+	return c.GetActiveBackend().Seek(positionMS)
+}
+
+// SetVolume sets player volume (0-100).
+func (c *Coordinator) SetVolume(volume int) error {
+	return c.GetActiveBackend().SetVolume(volume)
+}
+
+// GetStatus returns the current consolidated PlayerStatus.
+func (c *Coordinator) GetStatus(guestID string) PlayerStatus {
+	c.modeMu.RLock()
+	mode := c.activeMode
+	c.modeMu.RUnlock()
+
+	backend := c.GetActiveBackend()
+	st := backend.GetStatus()
+	st.ConfiguredBackend = mode
+	st.ActiveBackend = backend.Name()
+	st.LibrespotConnected = c.librespot.Available()
+	st.MPRISAvailable = c.mpris.Available()
+
+	// Enrich with skip vote stats from store if now_playing exists
+	settings, _ := c.store.GetSettings()
+	st.SkipVoteThreshold = settings.SkipVoteThreshold
+	if st.SkipVoteThreshold <= 0 {
+		st.SkipVoteThreshold = 3
+	}
+
+	np, _ := c.store.GetNowPlaying(guestID)
+	if np != nil {
+		skipCount, votedByMe, _ := c.store.GetSkipVotes(np.ID, guestID)
+		st.SkipVotes = skipCount
+		st.SkipVotedByMe = votedByMe
+		if np.DurationMS > 0 {
+			st.DurationMS = np.DurationMS
+		}
+	}
+
+	return st
+}
+
+// HandleTrackEnded handles current track completion by advancing the queue or loading a fallback track.
+func (c *Coordinator) HandleTrackEnded() {
+	c.actionMu.Lock()
+	defer c.actionMu.Unlock()
+
+	settings, err := c.store.GetSettings()
+	if err != nil {
+		log.Printf("[player] Failed to get settings: %v", err)
+		return
+	}
+
+	// Advance queue
+	nextTrack, err := c.store.PopNextTrack(settings.QueueMode)
+	if err != nil {
+		log.Printf("[player] PopNextTrack error: %v", err)
+		return
+	}
+
+	if nextTrack != nil {
+		log.Printf("[player] Playing next queued track: %s (%s)", nextTrack.Title, nextTrack.SpotifyURI)
+		_ = c.PlaySong(nextTrack.SpotifyURI, nextTrack.DurationMS)
+		c.notifyStateChanged()
+		return
+	}
+
+	// Queue is empty! Check fallback pool if autoplay_fallback is enabled
+	if settings.AutoplayFallback {
+		fb, err := c.store.PickFallbackTrack()
+		if err == nil && fb != nil {
+			log.Printf("[player] Queue empty, playing fallback track: %s (%s)", fb.Title, fb.SpotifyURI)
+			qi := &store.QueueItem{
+				SpotifyURI:   fb.SpotifyURI,
+				TrackID:      fb.TrackID,
+				RawInput:     fb.SpotifyURI,
+				Title:        fb.Title,
+				Artist:       fb.Artist,
+				Album:        fb.Album,
+				ThumbnailURL: fb.ThumbnailURL,
+				DurationMS:   fb.DurationMS,
+				AddedByID:    "system",
+				AddedByName:  "DeckJam Autoplay",
+				AddedByColor: "#1db954",
+				Status:       "playing",
+				RoundNumber:  1,
+				CreatedAt:    time.Now().Unix(),
+			}
+			_ = c.store.AddToQueue(qi, settings.QueueMode)
+			_ = c.PlaySong(fb.SpotifyURI, fb.DurationMS)
+			c.notifyStateChanged()
+			return
+		}
+	}
+
+	// No next track and no fallback track
+	log.Printf("[player] Queue and fallback pool empty, stopping playback.")
+	_ = c.Stop()
+	c.notifyStateChanged()
+}
+
+// CheckAutoPlay triggers playback if currently idle and items exist in the queue.
+func (c *Coordinator) CheckAutoPlay() {
+	np, err := c.store.GetNowPlaying("")
+	if err != nil {
+		return
+	}
+
+	status := c.GetStatus("")
+	if np == nil || (!status.Playing && !status.Paused) {
+		// Nothing playing, try advancing queue
+		c.HandleTrackEnded()
+	}
+}
+
+// SkipCurrentTrack skips currently playing track immediately.
+func (c *Coordinator) SkipCurrentTrack() error {
+	np, err := c.store.GetNowPlaying("")
+	if err != nil || np == nil {
+		return fmt.Errorf("nothing currently playing")
+	}
+
+	_ = c.store.SetItemStatus(np.ID, "skipped")
+	c.HandleTrackEnded()
+	return nil
+}
+
+// PlayNowItem immediately plays the specified queued item.
+func (c *Coordinator) PlayNowItem(itemID int64) error {
+	c.actionMu.Lock()
+	defer c.actionMu.Unlock()
+
+	item, err := c.store.PlayNow(itemID)
+	if err != nil {
+		return err
+	}
+
+	_ = c.PlaySong(item.SpotifyURI, item.DurationMS)
+	c.notifyStateChanged()
+	return nil
+}
+
+// SubscribeStateChange allows server to receive notifications on state transitions.
+func (c *Coordinator) SubscribeStateChange(ch chan struct{}) {
+	c.listenersMu.Lock()
+	defer c.listenersMu.Unlock()
+	c.listeners = append(c.listeners, ch)
+}
+
+// UnsubscribeStateChange removes listener channel.
+func (c *Coordinator) UnsubscribeStateChange(ch chan struct{}) {
+	c.listenersMu.Lock()
+	defer c.listenersMu.Unlock()
+	for i, l := range c.listeners {
+		if l == ch {
+			c.listeners = append(c.listeners[:i], c.listeners[i+1:]...)
+			break
+		}
+	}
+}
+
+func (c *Coordinator) notifyStateChanged() {
+	c.listenersMu.RLock()
+	defer c.listenersMu.RUnlock()
+	for _, l := range c.listeners {
+		select {
+		case l <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// Close closes all backends.
+func (c *Coordinator) Close() {
+	if c.librespot != nil {
+		_ = c.librespot.Close()
+	}
+	if c.mpris != nil {
+		_ = c.mpris.Close()
+	}
+	if c.mock != nil {
+		_ = c.mock.Close()
+	}
+}

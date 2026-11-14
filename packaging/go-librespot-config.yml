@@ -1,0 +1,55 @@
+# ==============================================================================
+# go-librespot configuration template for SteamOS / Steam Deck
+# Installed to: ~/.config/go-librespot/config.yml
+# ==============================================================================
+
+# Device identity advertised on Spotify Connect
+device_name: "Steam Deck Jam"
+device_type: "speaker"
+
+# Audio backend: pulseaudio routes directly through PipeWire-Pulse on SteamOS.
+# This works seamlessly in both Gaming Mode and Desktop Mode without taking exclusive
+# ALSA hardware locks away from Steam games or gamescope!
+audio_backend: "pulseaudio"
+
+# Zeroconf / Spotify Connect discovery
+zeroconf_enabled: true
+zeroconf_port: 0
+
+# Credentials configuration
+# Mode 1: Zeroconf (Recommended for parties & initial setup)
+# Connect once from the Spotify mobile/desktop app on the same network; credentials
+# are persisted locally so go-librespot stays logged in across reboots.
+credentials:
+  type: "zeroconf"
+  zeroconf:
+    persist_credentials: true
+
+# Mode 2: Device Authorization (Alternative flow)
+# Uncomment the block below and comment out the zeroconf block above if you prefer
+# pairing via spotify.com/pair using a one-time activation code.
+# credentials:
+#   type: "device_auth"
+
+# Local encrypted audio cache
+# Crucial for road trips, camping, and shaky Wi-Fi / cell hotspot connections.
+# go-librespot caches encrypted CDN audio chunks locally up to 2GB with LRU eviction,
+# eliminating buffering and stuttering when replay occurs.
+cache:
+  enabled: true
+  dir: "~/.cache/go-librespot"
+  size_limit: "2GB"
+
+# Local HTTP management API for DeckJam backend control
+server:
+  enabled: true
+  address: "127.0.0.1"
+  port: 3678
+
+# Volume and normalization settings
+volume_steps: 100
+initial_volume: 80
+normalisation_enabled: true
+
+# Bitrate: 320 kbps (High quality)
+bitrate: 320
