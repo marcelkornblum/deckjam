@@ -37,24 +37,27 @@ mkdir -p "$BIN_DIR" "$CONFIG_DIR" "$SYSTEMD_USER_DIR" "$APP_DIR" "$SHARE_DECKJAM
 # Ensure ~/.local/bin is on PATH in current shell if not already
 export PATH="$BIN_DIR:$PATH"
 
-# 2. Build or Copy deckjam Binary
+# 2. Build or Copy deckjam Binary (atomic mv avoids 'Text file busy' if running)
 echo "[+] Step 1: Installing deckjam binary..."
 if [ -f "$REPO_ROOT/deckjam" ] && [ -x "$REPO_ROOT/deckjam" ]; then
     echo "    Found prebuilt binary at $REPO_ROOT/deckjam. Installing..."
-    cp -f "$REPO_ROOT/deckjam" "$BIN_DIR/deckjam"
-    chmod +x "$BIN_DIR/deckjam"
+    cp -f "$REPO_ROOT/deckjam" "$BIN_DIR/deckjam.tmp"
+    chmod +x "$BIN_DIR/deckjam.tmp"
+    mv -f "$BIN_DIR/deckjam.tmp" "$BIN_DIR/deckjam"
 elif [ -f "$REPO_ROOT/bin/deckjam-linux-amd64.gz" ]; then
-    echo "    Found prebuilt compressed binary at $REPO_ROOT/bin/deckjam-linux-amd64.gz. Extracting..."
-    gunzip -c "$REPO_ROOT/bin/deckjam-linux-amd64.gz" > "$BIN_DIR/deckjam"
-    chmod +x "$BIN_DIR/deckjam"
-    echo "    Successfully installed $BIN_DIR/deckjam from gz."
+    echo "    Extracting prebuilt binary to $BIN_DIR/deckjam..."
+    gunzip -c "$REPO_ROOT/bin/deckjam-linux-amd64.gz" > "$BIN_DIR/deckjam.tmp"
+    chmod +x "$BIN_DIR/deckjam.tmp"
+    mv -f "$BIN_DIR/deckjam.tmp" "$BIN_DIR/deckjam"
+    echo "    Successfully installed $BIN_DIR/deckjam."
 elif command -v go >/dev/null 2>&1 && [ -f "$REPO_ROOT/go.mod" ]; then
     echo "    Building deckjam from source with Go..."
     (
         cd "$REPO_ROOT"
-        go build -o "$BIN_DIR/deckjam" ./cmd/deckjam
+        go build -o "$BIN_DIR/deckjam.tmp" ./cmd/deckjam
     )
-    chmod +x "$BIN_DIR/deckjam"
+    chmod +x "$BIN_DIR/deckjam.tmp"
+    mv -f "$BIN_DIR/deckjam.tmp" "$BIN_DIR/deckjam"
     echo "    Successfully built and installed $BIN_DIR/deckjam."
 else
     echo "    [!] Warning: Neither prebuilt binary nor 'go' compiler found."
@@ -63,18 +66,19 @@ fi
 # 3. Download or Verify cloudflared
 echo "[+] Step 2: Checking cloudflared..."
 CLOUDFLARED_BIN="$BIN_DIR/cloudflared"
-if [ -x "$CLOUDFLARED_BIN" ] && [ "$FORCE" -eq 0 ]; then
+if [ -x "$CLOUDFLARED_BIN" ]; then
     echo "    cloudflared is already installed at $CLOUDFLARED_BIN."
 else
     echo "    Downloading cloudflared-linux-amd64..."
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -m 30 "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o "$CLOUDFLARED_BIN" 2>/dev/null || true
-        if [ -f "$CLOUDFLARED_BIN" ] && [ -s "$CLOUDFLARED_BIN" ]; then
-            chmod +x "$CLOUDFLARED_BIN"
+        curl -fSL -m 45 "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o "$CLOUDFLARED_BIN.tmp" 2>/dev/null || true
+        if [ -f "$CLOUDFLARED_BIN.tmp" ] && [ -s "$CLOUDFLARED_BIN.tmp" ]; then
+            chmod +x "$CLOUDFLARED_BIN.tmp"
+            mv -f "$CLOUDFLARED_BIN.tmp" "$CLOUDFLARED_BIN"
             echo "    cloudflared installed successfully to $CLOUDFLARED_BIN."
         else
-            rm -f "$CLOUDFLARED_BIN"
-            echo "    [!] Warning: Could not download cloudflared (offline?); tunnel service may be unavailable."
+            rm -f "$CLOUDFLARED_BIN.tmp"
+            echo "    [!] Warning: Could not download cloudflared (offline?); local LAN IP will still work."
         fi
     fi
 fi
@@ -82,31 +86,22 @@ fi
 # 4. Download or Verify go-librespot
 echo "[+] Step 3: Checking go-librespot..."
 LIBRESPOT_BIN="$BIN_DIR/go-librespot"
-if [ -x "$LIBRESPOT_BIN" ] && [ "$FORCE" -eq 0 ]; then
-    echo "    go-librespot is already installed at $LIBRESPOT_BIN (use --force to overwrite)."
+if [ -x "$LIBRESPOT_BIN" ]; then
+    echo "    go-librespot is already installed at $LIBRESPOT_BIN."
 else
-    echo "    Fetching go-librespot release info from GitHub..."
+    echo "    Downloading go-librespot..."
     TMP_DIR="$(mktemp -d /tmp/deckjam-install.XXXXXX)"
     DOWNLOAD_SUCCESS=0
 
     if command -v curl >/dev/null 2>&1; then
-        TARBALL_URL=""
-        LATEST_JSON="$(curl -fsSL -m 10 "https://api.github.com/repos/devgianlu/go-librespot/releases/latest" 2>/dev/null || true)"
-        if [ -n "$LATEST_JSON" ]; then
-            TARBALL_URL="$(echo "$LATEST_JSON" | grep -o 'https://[^"]*linux_x86_64\.tar\.gz' | head -n 1 || true)"
-        fi
-
-        # Fallback to known stable URL if API rate-limited or JSON parse failed
-        if [ -z "$TARBALL_URL" ]; then
-            TARBALL_URL="https://github.com/devgianlu/go-librespot/releases/latest/download/go-librespot_linux_x86_64.tar.gz"
-        fi
-
+        TARBALL_URL="https://github.com/devgianlu/go-librespot/releases/latest/download/go-librespot_linux_x86_64.tar.gz"
         echo "    Downloading from: $TARBALL_URL ..."
-        if curl -fSL -m 30 "$TARBALL_URL" -o "$TMP_DIR/go-librespot.tar.gz" 2>/dev/null; then
+        if curl -fSL -m 45 "$TARBALL_URL" -o "$TMP_DIR/go-librespot.tar.gz" 2>/dev/null; then
             tar -xzf "$TMP_DIR/go-librespot.tar.gz" -C "$TMP_DIR"
             if [ -f "$TMP_DIR/go-librespot" ]; then
-                cp -f "$TMP_DIR/go-librespot" "$LIBRESPOT_BIN"
-                chmod +x "$LIBRESPOT_BIN"
+                cp -f "$TMP_DIR/go-librespot" "$LIBRESPOT_BIN.tmp"
+                chmod +x "$LIBRESPOT_BIN.tmp"
+                mv -f "$LIBRESPOT_BIN.tmp" "$LIBRESPOT_BIN"
                 DOWNLOAD_SUCCESS=1
                 echo "    go-librespot installed successfully to $LIBRESPOT_BIN."
             fi
