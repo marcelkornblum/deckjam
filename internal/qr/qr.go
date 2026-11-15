@@ -39,3 +39,14 @@ func GenerateSVG(content string, size int) (string, error) {
 	sb.WriteString("</svg>")
 	return sb.String(), nil
 }
+
+// GenerateTerminal generates a UTF-8 / ASCII terminal QR code for the given content.
+// It uses half-block characters for high-density crisp rendering in any terminal.
+func GenerateTerminal(content string) (string, error) {
+	q, err := qrcode.New(content, qrcode.Low)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate terminal qr code: %w", err)
+	}
+	return q.ToSmallString(false), nil
+}
+

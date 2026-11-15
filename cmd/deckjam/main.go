@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/marcelkornblum/deckjam/internal/player"
+	"github.com/marcelkornblum/deckjam/internal/qr"
 	"github.com/marcelkornblum/deckjam/internal/server"
 	"github.com/marcelkornblum/deckjam/internal/spotify"
 	"github.com/marcelkornblum/deckjam/internal/store"
@@ -37,8 +38,20 @@ func main() {
 	backendFlag := flag.String("backend", getEnv("DECKJAM_BACKEND", "auto"), "Playback backend: auto | librespot | mpris | mock")
 	hostPINFlag := flag.String("host-pin", getEnv("DECKJAM_HOST_PIN", ""), "Host PIN override (optional; 4-digit PIN generated in SQLite if unset)")
 	hostnameFlag := flag.String("hostname", getEnv("DECKJAM_HOSTNAME", ""), "Hostname override for join URL (default auto-detected LAN IP)")
+	qrFlag := flag.String("qr", "", "Print terminal QR code for the given URL/string to stdout and exit")
 
 	flag.Parse()
+
+	// If --qr flag provided, print terminal QR code directly and exit
+	if *qrFlag != "" {
+		terminalQR, err := qr.GenerateTerminal(*qrFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating QR: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(terminalQR)
+		os.Exit(0)
+	}
 
 	log.Printf("Starting DeckJam backend...")
 	log.Printf("Listen Address: %s", *addrFlag)
@@ -80,6 +93,7 @@ func main() {
 	// Server
 	srv := server.NewServer(server.Config{
 		Addr:         *addrFlag,
+		DataDir:      *dataDirFlag,
 		Store:        st,
 		Resolver:     resolver,
 		Coordinator:  coordinator,

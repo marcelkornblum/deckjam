@@ -237,6 +237,68 @@ button:focus-visible {
   background: var(--accent-emerald);
 }
 
+/* 1-Tap Spotify Pairing Banner */
+.pair-banner {
+  background: linear-gradient(135deg, rgba(30, 215, 96, 0.18), rgba(20, 23, 26, 0.95));
+  border-bottom: 2px solid var(--accent-emerald);
+  color: var(--text-bright);
+  padding: 10px 16px;
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.pair-banner.hidden {
+  display: none;
+}
+
+.pair-banner-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.pair-banner-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.pair-badge {
+  background: var(--accent-emerald);
+  color: #0b0d0e;
+  font-weight: 800;
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  letter-spacing: 0.5px;
+}
+
+.pair-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-emerald);
+  color: #0b0d0e;
+  font-weight: 700;
+  font-size: 12px;
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  box-shadow: 0 2px 8px rgba(30, 215, 96, 0.4);
+  white-space: nowrap;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.pair-action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(30, 215, 96, 0.6);
+}
+
 /* Offline Outbox Alert Banner */
 .outbox-banner {
   background: var(--accent-amber-dim);

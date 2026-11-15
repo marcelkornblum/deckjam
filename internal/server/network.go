@@ -3,11 +3,14 @@ package server
 import (
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
-// DetectNetworkURLs discovers non-loopback LAN IPv4 addresses and returns join_url and lan_urls.
-func DetectNetworkURLs(port string, customHostname string) (string, []string) {
+// DetectNetworkURLs discovers Cloudflare quick tunnel URLs (from public_url.txt)
+// and non-loopback LAN IPv4 addresses, returning join_url and lan_urls.
+func DetectNetworkURLs(port string, customHostname string, dataDir string) (string, []string) {
 	if port == "" {
 		port = "8080"
 	}
@@ -43,6 +46,18 @@ func DetectNetworkURLs(port string, customHostname string) (string, []string) {
 
 	var lanURLs []string
 	var primaryJoinURL string
+
+	// Check if public_url.txt exists in dataDir and contains a valid https://... URL
+	if dataDir != "" {
+		pubURLPath := filepath.Join(dataDir, "public_url.txt")
+		if data, err := os.ReadFile(pubURLPath); err == nil {
+			trimmed := strings.TrimSpace(string(data))
+			if strings.HasPrefix(trimmed, "https://") {
+				primaryJoinURL = trimmed
+				lanURLs = append(lanURLs, trimmed)
+			}
+		}
+	}
 
 	for _, ip := range lanIPs {
 		u := fmt.Sprintf("http://%s:%s", ip, port)

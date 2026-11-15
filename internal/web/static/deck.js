@@ -38,6 +38,9 @@
     stageRoomName: document.getElementById('stageRoomName'),
     backendDot: document.getElementById('backendDot'),
     backendName: document.getElementById('backendName'),
+    deckPairBanner: document.getElementById('deckPairBanner'),
+    deckPairCode: document.getElementById('deckPairCode'),
+    deckPairLink: document.getElementById('deckPairLink'),
     stageArtwork: document.getElementById('stageArtwork'),
     stageEq: document.getElementById('stageEq'),
     stageStatusText: document.getElementById('stageStatusText'),
@@ -155,6 +158,19 @@
       el.backendName.textContent = 'Spotify App (MPRIS)';
     } else {
       el.backendName.textContent = 'Preview Audio Engine';
+    }
+
+    // Spotify Pairing Banner
+    if (el.deckPairBanner) {
+      const pairCode = state.player && state.player.librespot_pair_code;
+      const pairUrl = (state.player && state.player.librespot_pair_url) || (pairCode ? `https://spotify.com/pair?code=${encodeURIComponent(pairCode)}` : 'https://spotify.com/pair');
+      if (pairCode) {
+        if (el.deckPairCode) el.deckPairCode.textContent = pairCode;
+        if (el.deckPairLink) el.deckPairLink.href = pairUrl;
+        el.deckPairBanner.classList.remove('hidden');
+      } else {
+        el.deckPairBanner.classList.add('hidden');
+      }
     }
 
     // Join QR code and URL

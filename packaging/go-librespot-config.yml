@@ -13,23 +13,11 @@ device_type: "speaker"
 audio_backend: "pulseaudio"
 
 # Zeroconf / Spotify Connect discovery
-zeroconf_enabled: true
-zeroconf_port: 0
+zeroconf_enabled: false
 
-# Credentials configuration
-# Mode 1: Zeroconf (Recommended for parties & initial setup)
-# Connect once from the Spotify mobile/desktop app on the same network; credentials
-# are persisted locally so go-librespot stays logged in across reboots.
+# Credentials configuration: device_auth for frictionless 1-tap phone hotspot pairing
 credentials:
-  type: "zeroconf"
-  zeroconf:
-    persist_credentials: true
-
-# Mode 2: Device Authorization (Alternative flow)
-# Uncomment the block below and comment out the zeroconf block above if you prefer
-# pairing via spotify.com/pair using a one-time activation code.
-# credentials:
-#   type: "device_auth"
+  type: "device_auth"
 
 # Local encrypted audio cache
 # Crucial for road trips, camping, and shaky Wi-Fi / cell hotspot connections.
@@ -37,7 +25,7 @@ credentials:
 # eliminating buffering and stuttering when replay occurs.
 cache:
   enabled: true
-  dir: "~/.cache/go-librespot"
+  dir: ""
   size_limit: "2GB"
 
 # Local HTTP management API for DeckJam backend control
@@ -50,6 +38,3 @@ server:
 volume_steps: 100
 initial_volume: 80
 normalisation_enabled: true
-
-# Bitrate: 320 kbps (High quality)
-bitrate: 320

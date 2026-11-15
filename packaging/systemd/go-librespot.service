@@ -7,7 +7,7 @@ After=network.target sound.target
 Type=simple
 Environment=PULSE_RUNTIME_PATH=%t/pulse
 Environment=XDG_RUNTIME_DIR=%t
-ExecStart=%h/.local/bin/go-librespot -config_path %h/.config/go-librespot/config.yml
+ExecStart=%h/.local/bin/go-librespot --config_dir %h/.config/go-librespot
 Restart=on-failure
 RestartSec=3
 

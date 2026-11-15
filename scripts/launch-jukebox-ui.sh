@@ -95,5 +95,44 @@ if command -v xdg-open >/dev/null 2>&1; then
     exec xdg-open "$TARGET_URL"
 fi
 
-echo "[DeckJam UI] Error: Could not detect any suitable web browser to open $TARGET_URL"
-exit 1
+# Fallback: Launch via Steam's built-in browser overlay if steam command is available
+if command -v steam >/dev/null 2>&1; then
+    echo "[DeckJam UI] Launching via Steam overlay browser..."
+    exec steam "steam://openurl/$TARGET_URL"
+fi
+
+# Stock Steam Deck fallback with zero browsers installed: show GUI dialog with Join URL and Spotify Pair Info
+ACTIVE_JOIN_URL=""
+if [ -f "$HOME/.local/share/deckjam/public_url.txt" ]; then
+    ACTIVE_JOIN_URL="$(cat "$HOME/.local/share/deckjam/public_url.txt" 2>/dev/null | tr -d '[:space:]')"
+fi
+if [ -z "$ACTIVE_JOIN_URL" ] && command -v hostname >/dev/null 2>&1; then
+    LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")"
+    ACTIVE_JOIN_URL="http://${LAN_IP}:8080"
+fi
+
+PAIR_INFO=""
+if command -v curl >/dev/null 2>&1; then
+    AUTH_JSON="$(curl -fs -m 2 http://127.0.0.1:3678/auth/code 2>/dev/null || true)"
+    if [ -n "$AUTH_JSON" ]; then
+        CODE="$(echo "$AUTH_JSON" | grep -o '"code":"[^"]*"' | cut -d'"' -f4 || true)"
+        if [ -n "$CODE" ]; then
+            PAIR_INFO="Spotify Pair Code: $CODE (go to spotify.com/pair)"
+        fi
+    fi
+fi
+
+MSG="DeckJam Jukebox is running!\n\nJoin URL: ${ACTIVE_JOIN_URL:-http://127.0.0.1:8080}\n${PAIR_INFO}\n\nOpen this link on your phone to control the party queue!"
+
+if command -v kdialog >/dev/null 2>&1; then
+    kdialog --title "DeckJam Jukebox" --msgbox "$MSG"
+    exit 0
+fi
+
+if command -v zenity >/dev/null 2>&1; then
+    zenity --info --title="DeckJam Jukebox" --text="$MSG"
+    exit 0
+fi
+
+echo -e "$MSG"
+exit 0

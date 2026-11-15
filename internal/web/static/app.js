@@ -90,6 +90,11 @@
     hostLockIcon: document.getElementById('hostLockIcon'),
     hostStatusLabel: document.getElementById('hostStatusLabel'),
 
+    // Spotify Pairing Banner
+    pairBanner: document.getElementById('pairBanner'),
+    pairBannerCode: document.getElementById('pairBannerCode'),
+    pairBannerLink: document.getElementById('pairBannerLink'),
+
     // Now Playing Hero
     nowPlayingCard: document.getElementById('nowPlayingCard'),
     npArtwork: document.getElementById('npArtwork'),
@@ -384,6 +389,19 @@
 
     // Host status
     updateHostBadge(state.is_host);
+
+    // Spotify Pairing Banner
+    if (el.pairBanner) {
+      const pairCode = state.player && state.player.librespot_pair_code;
+      const pairUrl = (state.player && state.player.librespot_pair_url) || (pairCode ? `https://spotify.com/pair?code=${encodeURIComponent(pairCode)}` : 'https://spotify.com/pair');
+      if (pairCode) {
+        if (el.pairBannerCode) el.pairBannerCode.textContent = pairCode;
+        if (el.pairBannerLink) el.pairBannerLink.href = pairUrl;
+        el.pairBanner.classList.remove('hidden');
+      } else {
+        el.pairBanner.classList.add('hidden');
+      }
+    }
 
     // Update Now Playing Hero
     renderNowPlaying(state.now_playing, state.player);

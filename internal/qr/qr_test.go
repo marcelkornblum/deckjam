@@ -27,3 +27,17 @@ func TestGenerateSVG(t *testing.T) {
 		t.Errorf("SVG should contain rect modules")
 	}
 }
+
+func TestGenerateTerminal(t *testing.T) {
+	out, err := GenerateTerminal("http://192.168.1.100:8080")
+	if err != nil {
+		t.Fatalf("GenerateTerminal failed: %v", err)
+	}
+	if len(out) == 0 {
+		t.Errorf("GenerateTerminal output is empty")
+	}
+	if !strings.Contains(out, "\n") {
+		t.Errorf("Terminal QR should be multi-line")
+	}
+}
+

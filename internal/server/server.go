@@ -26,6 +26,7 @@ type Server struct {
 	addr        string
 	port        string
 	hostname    string
+	dataDir     string
 	store       *store.Store
 	resolver    *spotify.Resolver
 	worker      *spotify.BackgroundWorker
@@ -39,6 +40,7 @@ type Server struct {
 // Config provides configuration parameters for the DeckJam server.
 type Config struct {
 	Addr         string
+	DataDir      string
 	Store        *store.Store
 	Resolver     *spotify.Resolver
 	Coordinator  *player.Coordinator
@@ -59,12 +61,13 @@ func NewServer(cfg Config) *Server {
 		port = parts[1]
 	}
 
-	joinURL, lanURLs := DetectNetworkURLs(port, cfg.Hostname)
+	joinURL, lanURLs := DetectNetworkURLs(port, cfg.Hostname, cfg.DataDir)
 
 	s := &Server{
 		addr:        cfg.Addr,
 		port:        port,
 		hostname:    cfg.Hostname,
+		dataDir:     cfg.DataDir,
 		store:       cfg.Store,
 		resolver:    cfg.Resolver,
 		coordinator: cfg.Coordinator,
@@ -205,6 +208,8 @@ func (s *Server) getSnapshot(guestID string, isHost bool) (StateSnapshot, error)
 		return StateSnapshot{}, err
 	}
 
+	joinURL, lanURLs := DetectNetworkURLs(s.port, s.hostname, s.dataDir)
+
 	np, _ := s.store.GetNowPlaying(guestID)
 	queued, _ := s.store.GetQueuedItems(settings.QueueMode, guestID)
 	history, _ := s.store.GetHistory(guestID)
@@ -226,8 +231,8 @@ func (s *Server) getSnapshot(guestID string, isHost bool) (StateSnapshot, error)
 		Settings:      settings,
 		IsHost:        isHost,
 		HostPIN:       hostPin,
-		JoinURL:       s.joinURL,
-		LanURLs:       s.lanURLs,
+		JoinURL:       joinURL,
+		LanURLs:       lanURLs,
 		OnlineGuests:  onlineGuests,
 		ServerTimeMS:  time.Now().UnixMilli(),
 	}, nil
@@ -851,7 +856,8 @@ func (s *Server) handleArtwork(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleQRSVG(w http.ResponseWriter, r *http.Request) {
 	data := r.URL.Query().Get("data")
 	if data == "" {
-		data = s.joinURL
+		joinURL, _ := DetectNetworkURLs(s.port, s.hostname, s.dataDir)
+		data = joinURL
 	}
 
 	svg, err := qr.GenerateSVG(data, 256)
@@ -869,7 +875,8 @@ func (s *Server) handleHTTPShortcuts(w http.ResponseWriter, r *http.Request) {
 	guestID := r.URL.Query().Get("guest_id")
 	guestName := r.URL.Query().Get("guest_name")
 
-	configJSON := GenerateHTTPShortcutsConfig(s.joinURL, guestID, guestName)
+	joinURL, _ := DetectNetworkURLs(s.port, s.hostname, s.dataDir)
+	configJSON := GenerateHTTPShortcutsConfig(joinURL, guestID, guestName)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="deckjam-shortcuts.json"`)

@@ -131,6 +131,12 @@ func (c *Coordinator) GetStatus(guestID string) PlayerStatus {
 	st.LibrespotConnected = c.librespot.Available()
 	st.MPRISAvailable = c.mpris.Available()
 
+	// Always expose librespot pairing info so UI can guide pairing even when currently in mock fallback
+	if pairCode, pairURL, _ := c.librespot.PairInfo(); pairCode != "" {
+		st.LibrespotPairCode = pairCode
+		st.LibrespotPairURL = pairURL
+	}
+
 	// Enrich with skip vote stats from store if now_playing exists
 	settings, _ := c.store.GetSettings()
 	st.SkipVoteThreshold = settings.SkipVoteThreshold

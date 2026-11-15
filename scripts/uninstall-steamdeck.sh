@@ -20,8 +20,10 @@ echo "=========================================================="
 # 1. Stop and disable systemd user services
 echo "[+] Stopping and disabling DeckJam systemd user services..."
 if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user stop deckjam-tunnel.service 2>/dev/null || true
     systemctl --user stop deckjam.service 2>/dev/null || true
     systemctl --user stop go-librespot.service 2>/dev/null || true
+    systemctl --user disable deckjam-tunnel.service 2>/dev/null || true
     systemctl --user disable deckjam.service 2>/dev/null || true
     systemctl --user disable go-librespot.service 2>/dev/null || true
 fi
@@ -29,9 +31,11 @@ fi
 # Stop any running processes
 pkill -x deckjam 2>/dev/null || true
 pkill -x go-librespot 2>/dev/null || true
+pkill -f "cloudflared tunnel" 2>/dev/null || true
 
 # 2. Remove service unit files
 echo "[+] Removing service unit files..."
+rm -f "$HOME/.config/systemd/user/deckjam-tunnel.service"
 rm -f "$HOME/.config/systemd/user/deckjam.service"
 rm -f "$HOME/.config/systemd/user/go-librespot.service"
 

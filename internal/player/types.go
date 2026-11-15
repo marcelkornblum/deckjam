@@ -14,6 +14,7 @@ type PlayerStatus struct {
 	SkipVotedByMe      bool   `json:"skip_voted_by_me"`
 	LibrespotConnected bool   `json:"librespot_connected"`
 	LibrespotPairCode  string `json:"librespot_pair_code"`
+	LibrespotPairURL   string `json:"librespot_pair_url"`
 	MPRISAvailable     bool   `json:"mpris_available"`
 	LastError          string `json:"last_error"`
 }

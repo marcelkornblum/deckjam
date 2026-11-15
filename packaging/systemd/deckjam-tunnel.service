@@ -1,0 +1,14 @@
+[Unit]
+Description=DeckJam Cloudflare Quick Tunnel Service
+Documentation=https://github.com/marcelkornblum/deckjam
+After=network.target deckjam.service
+Wants=deckjam.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/deckjam/run-tunnel.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

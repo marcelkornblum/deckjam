@@ -2,6 +2,7 @@
 /deckjam
 /dist/
 *.exe
+!/bin/deckjam-linux-amd64.gz
 
 # Local runtime DB and persistent data
 *.db

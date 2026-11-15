@@ -73,31 +73,34 @@ flowchart TD
 
 ---
 
-## 🚀 Quick Start (Steam Deck Setup)
+## 🚀 Quick Start (Steam Deck 1-Command Turnkey Setup)
 
 DeckJam installs completely in **user space** (`~/.local/bin`, `~/.config`, `~/.local/share`). It **never requires root** or `sudo`, and survives SteamOS system updates intact.
 
-### 1. Clone & Run the Installer
+### 1. One-Click Turnkey Launch (`./go.sh`)
 
 Switch to **Desktop Mode** on your Steam Deck (or SSH into it), open the terminal (**Konsole**), and run:
 
 ```bash
 git clone https://github.com/marcelkornblum/deckjam.git ~/deckjam
 cd ~/deckjam
-./scripts/install-steamdeck.sh
+./go.sh
 ```
 
-What the installer automatically does:
-- Compiles `deckjam` from source (or copies the prebuilt binary).
-- Downloads the latest `go-librespot` x86_64 release to `~/.local/bin/go-librespot`.
-- Configures PipeWire-Pulse audio and a 2GB persistent audio cache.
-- Installs and enables `systemd --user` background services (`go-librespot.service` and `deckjam.service`).
-- Creates a `DeckJam Jukebox` desktop shortcut and registers it with Steam Gaming Mode via `steamos-add-to-steam`.
+What `./go.sh` automatically does:
+- Installs or unpacks the prebuilt static binary (`bin/deckjam-linux-amd64.gz`).
+- Downloads `cloudflared` for automatic HTTPS Quick Tunnels (`https://*.trycloudflare.com`) so phones on your **iPhone / Android Hotspot** or across the room can join without manual port-forwarding or local subnet headaches!
+- Downloads and launches `go-librespot` with PipeWire audio output and a 2GB persistent audio cache.
+- Installs and enables `systemd --user` background services (`go-librespot.service`, `deckjam.service`, `deckjam-tunnel.service`).
+- Creates a `DeckJam Jukebox` desktop shortcut and registers it with Steam Gaming Mode (`steamos-add-to-steam`).
+- Displays a crisp, high-density **scannable terminal QR code** directly in your console!
 
-### 2. Pair Spotify Connect (One-Time Setup)
+### 2. Pair Spotify in 1 Tap
 
-1. Make sure your phone/laptop is on the same local Wi-Fi as your Steam Deck.
-2. Open the official Spotify app on your phone.
+1. Point your phone camera at the terminal QR code (or open the displayed Join URL).
+2. Look at the high-visibility **"Step 1: Connect Spotify"** banner at the top of the mobile UI.
+3. Tap **"Pair Spotify in 1 Tap &rarr;"** — Spotify authenticates your account in one tap via `spotify.com/pair`!
+4. The banner automatically disappears, and DeckJam immediately promotes `librespot` to active playback!
 3. Start playing any song, tap the **Devices** icon (Spotify Connect), and select **"Steam Deck Jam"**.
 4. That's it! Because `persist_credentials: true` is configured, your Deck will remain authenticated across reboots.
 
