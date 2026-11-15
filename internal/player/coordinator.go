@@ -11,17 +11,26 @@ import (
 
 // Coordinator coordinates between the active player backend, the SQLite store, and queue advancement.
 type Coordinator struct {
-	store        *store.Store
-	librespot    *LibrespotBackend
-	mpris        *MPRISBackend
-	mock         *MockBackend
+	store     *store.Store
+	librespot *LibrespotBackend
+	mpris     *MPRISBackend
+	mock      *MockBackend
 
-	modeMu       sync.RWMutex
-	activeMode   string // "auto", "librespot", "mpris", "mock"
+	modeMu     sync.RWMutex
+	activeMode string // "auto", "librespot", "mpris", "mock"
 
-	actionMu     sync.Mutex // serializes track transitions and queue popping
-	listenersMu  sync.RWMutex
-	listeners    []chan struct{}
+	stateMu         sync.RWMutex
+	userPaused      bool
+	lastPlayAttempt time.Time
+	retryTrackID    int64
+	retryCount      int
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
+
+	actionMu    sync.Mutex // serializes track transitions and queue popping
+	listenersMu sync.RWMutex
+	listeners   []chan struct{}
 }
 
 // NewCoordinator creates a new multi-backend Player Coordinator.
@@ -33,6 +42,7 @@ func NewCoordinator(st *store.Store, librespotURL string, configuredBackend stri
 	c := &Coordinator{
 		store:      st,
 		activeMode: configuredBackend,
+		stopCh:     make(chan struct{}),
 	}
 
 	onTrackEnded := func() {
@@ -43,7 +53,106 @@ func NewCoordinator(st *store.Store, librespotURL string, configuredBackend stri
 	c.mpris = NewMPRISBackend(onTrackEnded)
 	c.mock = NewMockBackend(onTrackEnded)
 
+	go c.watchdogLoop()
+
 	return c
+}
+
+func (c *Coordinator) isUserPaused() bool {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.userPaused
+}
+
+func (c *Coordinator) setUserPaused(val bool) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.userPaused = val
+}
+
+func (c *Coordinator) getLastPlayAttempt() time.Time {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.lastPlayAttempt
+}
+
+func (c *Coordinator) watchdogLoop() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			if c.isUserPaused() {
+				continue
+			}
+
+			np, err := c.store.GetNowPlaying("")
+			if err != nil {
+				continue
+			}
+
+			status := c.GetStatus("")
+			if np == nil {
+				settings, err := c.store.GetSettings()
+				if err == nil {
+					queued, _ := c.store.GetQueuedItems(settings.QueueMode, "")
+					if len(queued) > 0 {
+						c.HandleTrackEnded()
+					}
+				}
+				continue
+			}
+
+			if np != nil && np.SpotifyURI != "" {
+				needsPlay := (!status.Playing && !status.Paused) ||
+					(status.Paused && !c.isUserPaused() && status.ActiveBackend == "librespot") ||
+					(status.ActiveBackend == "librespot" && !c.librespot.HasLoadedTrack(np.SpotifyURI))
+
+				if !needsPlay {
+					continue
+				}
+
+				if time.Since(c.getLastPlayAttempt()) < 3500*time.Millisecond {
+					continue
+				}
+
+				c.stateMu.Lock()
+				if c.retryTrackID != np.ID {
+					c.retryTrackID = np.ID
+					c.retryCount = 1
+				} else {
+					c.retryCount++
+				}
+				count := c.retryCount
+				c.stateMu.Unlock()
+
+				if count > 4 {
+					settings, _ := c.store.GetSettings()
+					queued, _ := c.store.GetQueuedItems(settings.QueueMode, "")
+					if len(queued) > 0 {
+						log.Printf("[player] Track %s failed after %d attempts; advancing to next queued track", np.SpotifyURI, count-1)
+						_ = c.store.SetItemStatus(np.ID, "skipped")
+						c.stateMu.Lock()
+						c.retryCount = 0
+						c.stateMu.Unlock()
+						c.HandleTrackEnded()
+						continue
+					}
+					if count > 6 && time.Since(c.getLastPlayAttempt()) < 12*time.Second {
+						continue
+					}
+				}
+
+				err := c.PlaySong(np.SpotifyURI, np.DurationMS)
+				if err == nil {
+					c.notifyStateChanged()
+				}
+			}
+		}
+	}
 }
 
 // SetBackend changes configured backend mode.
@@ -81,26 +190,72 @@ func (c *Coordinator) GetActiveBackend() Backend {
 
 // PlaySong plays the specified Spotify URI on the active backend.
 func (c *Coordinator) PlaySong(uri string, durationMS int) error {
+	c.stateMu.Lock()
+	c.userPaused = false
+	c.lastPlayAttempt = time.Now()
+	c.stateMu.Unlock()
+
+	go EnsureBluetoothSink()
+
 	backend := c.GetActiveBackend()
 	if mock, ok := backend.(*MockBackend); ok {
 		mock.SetTrackDuration(durationMS)
 	}
-	return backend.Play(uri)
+	err := backend.Play(uri)
+	if err != nil {
+		log.Printf("[player] Play error for %s on %s: %v", uri, backend.Name(), err)
+	}
+	return err
 }
 
 // Pause pauses playback.
 func (c *Coordinator) Pause() error {
-	return c.GetActiveBackend().Pause()
+	c.setUserPaused(true)
+	err := c.GetActiveBackend().Pause()
+	c.notifyStateChanged()
+	return err
 }
 
 // Resume resumes playback.
 func (c *Coordinator) Resume() error {
-	return c.GetActiveBackend().Resume()
+	c.stateMu.Lock()
+	c.userPaused = false
+	c.retryCount = 0
+	c.stateMu.Unlock()
+
+	np, _ := c.store.GetNowPlaying("")
+	if np == nil {
+		c.HandleTrackEnded()
+		return nil
+	}
+
+	status := c.GetStatus("")
+	if status.ActiveBackend == "librespot" && !c.librespot.HasLoadedTrack(np.SpotifyURI) {
+		err := c.PlaySong(np.SpotifyURI, np.DurationMS)
+		c.notifyStateChanged()
+		return err
+	}
+	if !status.Playing && !status.Paused && np.SpotifyURI != "" {
+		err := c.PlaySong(np.SpotifyURI, np.DurationMS)
+		c.notifyStateChanged()
+		return err
+	}
+
+	err := c.GetActiveBackend().Resume()
+	if err != nil && np.SpotifyURI != "" {
+		err = c.PlaySong(np.SpotifyURI, np.DurationMS)
+	}
+	c.notifyStateChanged()
+	return err
 }
 
 // PlayPause toggles playback.
 func (c *Coordinator) PlayPause() error {
-	return c.GetActiveBackend().PlayPause()
+	status := c.GetStatus("")
+	if status.Playing && !status.Paused {
+		return c.Pause()
+	}
+	return c.Resume()
 }
 
 // Stop stops playback.
@@ -223,17 +378,40 @@ func (c *Coordinator) CheckAutoPlay() {
 		return
 	}
 
-	status := c.GetStatus("")
-	if np == nil || (!status.Playing && !status.Paused) {
-		// Nothing playing, try advancing queue
+	if np == nil {
+		c.setUserPaused(false)
 		c.HandleTrackEnded()
+		return
+	}
+
+	status := c.GetStatus("")
+	if !status.Playing && !c.isUserPaused() {
+		if np.SpotifyURI != "" {
+			_ = c.PlaySong(np.SpotifyURI, np.DurationMS)
+			c.notifyStateChanged()
+		} else {
+			c.HandleTrackEnded()
+		}
 	}
 }
 
 // SkipCurrentTrack skips currently playing track immediately.
 func (c *Coordinator) SkipCurrentTrack() error {
+	c.stateMu.Lock()
+	c.userPaused = false
+	c.retryCount = 0
+	c.stateMu.Unlock()
+
 	np, err := c.store.GetNowPlaying("")
 	if err != nil || np == nil {
+		settings, sErr := c.store.GetSettings()
+		if sErr == nil {
+			queued, _ := c.store.GetQueuedItems(settings.QueueMode, "")
+			if len(queued) > 0 {
+				c.HandleTrackEnded()
+				return nil
+			}
+		}
 		return fmt.Errorf("nothing currently playing")
 	}
 
@@ -244,6 +422,11 @@ func (c *Coordinator) SkipCurrentTrack() error {
 
 // PlayNowItem immediately plays the specified queued item.
 func (c *Coordinator) PlayNowItem(itemID int64) error {
+	c.stateMu.Lock()
+	c.userPaused = false
+	c.retryCount = 0
+	c.stateMu.Unlock()
+
 	c.actionMu.Lock()
 	defer c.actionMu.Unlock()
 
@@ -289,6 +472,9 @@ func (c *Coordinator) notifyStateChanged() {
 
 // Close closes all backends.
 func (c *Coordinator) Close() {
+	c.stopOnce.Do(func() {
+		close(c.stopCh)
+	})
 	if c.librespot != nil {
 		_ = c.librespot.Close()
 	}

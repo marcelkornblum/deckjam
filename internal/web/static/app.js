@@ -508,8 +508,16 @@
 
     const isPlaying = player && player.playing && !player.paused;
     isPlayingLocal = isPlaying;
-    el.npStatusText.textContent = isPlaying ? 'Now Playing' : 'Paused';
-    el.npStatusTag.style.color = isPlaying ? 'var(--accent-emerald)' : 'var(--accent-amber)';
+    if (isPlaying) {
+      el.npStatusText.textContent = 'Now Playing';
+      el.npStatusTag.style.color = 'var(--accent-emerald)';
+    } else if (player && player.paused) {
+      el.npStatusText.textContent = 'Paused';
+      el.npStatusTag.style.color = 'var(--accent-amber)';
+    } else {
+      el.npStatusText.textContent = 'Loading Audio...';
+      el.npStatusTag.style.color = 'var(--accent-amber)';
+    }
 
     currentDurationMs = track.duration_ms || (player ? player.duration_ms : 0) || 0;
     interpolatedPositionMs = (player ? player.position_ms : 0) || 0;
@@ -525,6 +533,9 @@
     el.btnVoteSkip.disabled = false;
     if (isMyTrack) {
       el.btnVoteSkipLabel.textContent = 'Instant Skip (Your Track)';
+      el.btnVoteSkip.classList.remove('voted');
+    } else if (!isPlaying) {
+      el.btnVoteSkipLabel.textContent = 'Skip Paused / Stuck Track';
       el.btnVoteSkip.classList.remove('voted');
     } else {
       el.btnVoteSkipLabel.textContent = `Vote to Skip (${votes}/${threshold})`;
@@ -547,7 +558,11 @@
     if (!state.now_playing) return;
     const isMyTrack = state.now_playing.added_by_id === guest.id;
     if (!isMyTrack) {
-      el.btnVoteSkipLabel.textContent = `Vote to Skip (${votes}/${threshold})`;
+      if (!isPlayingLocal) {
+        el.btnVoteSkipLabel.textContent = 'Skip Paused / Stuck Track';
+      } else {
+        el.btnVoteSkipLabel.textContent = `Vote to Skip (${votes}/${threshold})`;
+      }
     }
   }
 

@@ -26,8 +26,28 @@ for i in $(seq 1 40); do
     sleep 0.2
 done
 
+HOST_PIN=""
+BT_SINK=""
 if [ "$BACKEND_READY" -ne 1 ]; then
     echo "[!] Warning: DeckJam backend did not respond within 8s."
+else
+    # Fetch Host PIN from state API for easy host phone controls
+    STATE_JSON="$(curl -fs -m 2 http://127.0.0.1:8080/api/state 2>/dev/null || true)"
+    if [ -n "$STATE_JSON" ]; then
+        HOST_PIN="$(echo "$STATE_JSON" | grep -o '"host_pin":"[^"]*"' | cut -d'"' -f4 || true)"
+    fi
+
+    # Auto-route connected Bluetooth speaker (e.g. JBL PartyBox)
+    if command -v pactl >/dev/null 2>&1; then
+        BT_SINK="$(pactl list short sinks 2>/dev/null | awk '$2 ~ /^bluez_output\./ {print $2; exit}' || true)"
+        if [ -n "$BT_SINK" ]; then
+            pactl set-default-sink "$BT_SINK" >/dev/null 2>&1 || true
+            pactl set-sink-mute "$BT_SINK" 0 >/dev/null 2>&1 || true
+            pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r input_id; do
+                [ -n "$input_id" ] && pactl move-sink-input "$input_id" "$BT_SINK" >/dev/null 2>&1 || true
+            done
+        fi
+    fi
 fi
 
 # 3. Wait up to 8s for Cloudflare Quick Tunnel (if network connected)
@@ -82,9 +102,15 @@ if [ -x "$DECKJAM_BIN" ]; then
     "$DECKJAM_BIN" --qr "$JOIN_URL" || true
 fi
 
-# 6. Clear 2-line summary
+# 6. Clear summary
 echo "=========================================================="
 echo "Scan QR with your phone camera! Join URL: $JOIN_URL"
+if [ -n "$HOST_PIN" ]; then
+    echo "Host PIN (for phone controls): $HOST_PIN"
+fi
+if [ -n "$BT_SINK" ]; then
+    echo "Speaker Output: Bluetooth ($BT_SINK)"
+fi
 if [ -n "$PAIR_CODE" ]; then
     echo "Spotify Pair URL: ${PAIR_URL:-https://spotify.com/pair?code=$PAIR_CODE} (Pair Code: $PAIR_CODE)"
 else

@@ -15,23 +15,25 @@ import (
 // LibrespotBackend controls a local go-librespot daemon over HTTP REST and WebSocket events.
 // Conforms to go-librespot 0.10.5 OpenAPI specification.
 type LibrespotBackend struct {
-	mu           sync.RWMutex
-	baseURL      string
-	client       *http.Client
-	wsConn       *websocket.Conn
-	playing      bool
-	paused       bool
-	currentURI   string
-	positionMS   int
-	durationMS   int
-	volume       int
-	pairCode     string
-	pairURL      string
-	daemonUp     bool
-	connected    bool // true when GET / returns 200 OK and playback_ready == true
-	lastPlayTime time.Time
-	stopCh       chan struct{}
-	onTrackEnded func()
+	mu             sync.RWMutex
+	baseURL        string
+	pollClient     *http.Client
+	cmdClient      *http.Client
+	wsConn         *websocket.Conn
+	playing        bool
+	paused         bool
+	hasLoadedTrack bool
+	currentURI     string
+	positionMS     int
+	durationMS     int
+	volume         int
+	pairCode       string
+	pairURL        string
+	daemonUp       bool
+	connected      bool // true when GET / returns 200 OK and playback_ready == true
+	lastPlayTime   time.Time
+	stopCh         chan struct{}
+	onTrackEnded   func()
 }
 
 // NewLibrespotBackend creates a new LibrespotBackend instance.
@@ -43,7 +45,8 @@ func NewLibrespotBackend(baseURL string, onTrackEnded func()) *LibrespotBackend 
 
 	b := &LibrespotBackend{
 		baseURL:      baseURL,
-		client:       &http.Client{Timeout: 3 * time.Second},
+		pollClient:   &http.Client{Timeout: 2500 * time.Millisecond},
+		cmdClient:    &http.Client{Timeout: 12 * time.Second},
 		volume:       80,
 		durationMS:   180000,
 		onTrackEnded: onTrackEnded,
@@ -82,7 +85,7 @@ func (b *LibrespotBackend) checkStatus() {
 	if err != nil {
 		return
 	}
-	respRoot, err := b.client.Do(reqRoot)
+	respRoot, err := b.pollClient.Do(reqRoot)
 	if err != nil {
 		b.mu.Lock()
 		b.daemonUp = false
@@ -108,7 +111,7 @@ func (b *LibrespotBackend) checkStatus() {
 	pairURL := ""
 	reqAuth, err := http.NewRequest("GET", b.baseURL+"/auth/code", nil)
 	if err == nil {
-		respAuth, err := b.client.Do(reqAuth)
+		respAuth, err := b.pollClient.Do(reqAuth)
 		if err == nil {
 			defer respAuth.Body.Close()
 			if respAuth.StatusCode == http.StatusOK {
@@ -130,10 +133,12 @@ func (b *LibrespotBackend) checkStatus() {
 	isPaused := false
 	isStopped := false
 	hasStatusUpdate := false
+	status204 := false
+	hasTrack := false
 
 	reqStatus, err := http.NewRequest("GET", b.baseURL+"/status", nil)
 	if err == nil {
-		respStatus, err := b.client.Do(reqStatus)
+		respStatus, err := b.pollClient.Do(reqStatus)
 		if err == nil {
 			defer respStatus.Body.Close()
 			if respStatus.StatusCode == http.StatusOK {
@@ -153,6 +158,7 @@ func (b *LibrespotBackend) checkStatus() {
 					isStopped = statusData.Stopped
 					isPaused = statusData.Paused
 					volVal = statusData.Volume
+					hasTrack = statusData.Track != nil && statusData.Track.URI != ""
 					if statusData.Track != nil {
 						trackURI = statusData.Track.URI
 						trackPos = statusData.Track.Position
@@ -161,7 +167,7 @@ func (b *LibrespotBackend) checkStatus() {
 				}
 			} else if respStatus.StatusCode == http.StatusNoContent {
 				hasStatusUpdate = true
-				isStopped = true
+				status204 = true
 			}
 		}
 	}
@@ -182,16 +188,22 @@ func (b *LibrespotBackend) checkStatus() {
 		if volVal > 0 {
 			b.volume = volVal
 		}
-		if isStopped {
+		if status204 {
 			b.playing = false
 			b.paused = false
+			b.hasLoadedTrack = false
+			b.currentURI = ""
+		} else if isStopped || !hasTrack {
+			b.playing = false
+			b.paused = false
+			b.hasLoadedTrack = false
+			b.currentURI = ""
 		} else {
+			b.hasLoadedTrack = true
 			b.paused = isPaused
 			b.playing = !isPaused
-			if trackURI != "" {
-				b.currentURI = trackURI
-			}
-			if trackPos > 0 {
+			b.currentURI = trackURI
+			if trackPos >= 0 {
 				b.positionMS = trackPos
 			}
 			if trackDur > 0 {
@@ -263,10 +275,18 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 			b.pairURL = ""
 			b.mu.Unlock()
 
+		case "playback_error":
+			b.mu.Lock()
+			b.playing = false
+			b.paused = false
+			b.hasLoadedTrack = false
+			b.mu.Unlock()
+
 		case "playing":
 			b.mu.Lock()
 			b.playing = true
 			b.paused = false
+			b.hasLoadedTrack = true
 			var d struct {
 				URI string `json:"uri"`
 			}
@@ -312,6 +332,7 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 			b.mu.Lock()
 			b.playing = false
 			b.paused = false
+			b.hasLoadedTrack = false
 			recentPlay := time.Since(b.lastPlayTime) < 1500*time.Millisecond
 			b.mu.Unlock()
 
@@ -340,11 +361,21 @@ func (b *LibrespotBackend) Available() bool {
 	return b.connected
 }
 
+// HasLoadedTrack reports whether librespot currently has a track loaded (matching uri if specified).
+func (b *LibrespotBackend) HasLoadedTrack(uri string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if !b.hasLoadedTrack {
+		return false
+	}
+	return uri == "" || b.currentURI == uri
+}
+
 func (b *LibrespotBackend) Play(uri string) error {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"uri": uri,
 	})
-	resp, err := b.client.Post(b.baseURL+"/player/play", "application/json", bytes.NewReader(payload))
+	resp, err := b.cmdClient.Post(b.baseURL+"/player/play", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -357,6 +388,7 @@ func (b *LibrespotBackend) Play(uri string) error {
 	b.mu.Lock()
 	b.playing = true
 	b.paused = false
+	b.hasLoadedTrack = true
 	b.currentURI = uri
 	b.positionMS = 0
 	b.lastPlayTime = time.Now()
@@ -365,7 +397,7 @@ func (b *LibrespotBackend) Play(uri string) error {
 }
 
 func (b *LibrespotBackend) Pause() error {
-	resp, err := b.client.Post(b.baseURL+"/player/pause", "application/json", nil)
+	resp, err := b.cmdClient.Post(b.baseURL+"/player/pause", "application/json", nil)
 	if err != nil {
 		return err
 	}
@@ -377,30 +409,57 @@ func (b *LibrespotBackend) Pause() error {
 }
 
 func (b *LibrespotBackend) Resume() error {
-	resp, err := b.client.Post(b.baseURL+"/player/resume", "application/json", nil)
+	b.mu.RLock()
+	hasLoaded := b.hasLoadedTrack
+	currURI := b.currentURI
+	b.mu.RUnlock()
+
+	if !hasLoaded {
+		if currURI != "" {
+			return b.Play(currURI)
+		}
+		return fmt.Errorf("no track loaded in librespot")
+	}
+
+	resp, err := b.cmdClient.Post(b.baseURL+"/player/resume", "application/json", nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("librespot resume returned %d", resp.StatusCode)
+	}
+
 	b.mu.Lock()
 	b.paused = false
+	b.playing = true
 	b.mu.Unlock()
 	return nil
 }
 
 func (b *LibrespotBackend) PlayPause() error {
 	b.mu.RLock()
+	playing := b.playing
 	paused := b.paused
+	hasLoaded := b.hasLoadedTrack
+	currURI := b.currentURI
 	b.mu.RUnlock()
 
-	if paused {
+	if playing && !paused {
+		return b.Pause()
+	}
+	if paused && hasLoaded {
 		return b.Resume()
 	}
-	return b.Pause()
+	if currURI != "" {
+		return b.Play(currURI)
+	}
+	return fmt.Errorf("no track loaded in librespot")
 }
 
 func (b *LibrespotBackend) Stop() error {
-	resp, err := b.client.Post(b.baseURL+"/player/stop", "application/json", nil)
+	resp, err := b.cmdClient.Post(b.baseURL+"/player/stop", "application/json", nil)
 	if err != nil {
 		return err
 	}
@@ -408,6 +467,7 @@ func (b *LibrespotBackend) Stop() error {
 	b.mu.Lock()
 	b.playing = false
 	b.paused = false
+	b.hasLoadedTrack = false
 	b.positionMS = 0
 	b.mu.Unlock()
 	return nil
@@ -418,7 +478,7 @@ func (b *LibrespotBackend) Seek(positionMS int) error {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"position": positionMS,
 	})
-	resp, err := b.client.Post(b.baseURL+"/player/seek", "application/json", bytes.NewReader(payload))
+	resp, err := b.cmdClient.Post(b.baseURL+"/player/seek", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -438,7 +498,7 @@ func (b *LibrespotBackend) SetVolume(volume int) error {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"volume": volume,
 	})
-	resp, err := b.client.Post(b.baseURL+"/player/volume", "application/json", bytes.NewReader(payload))
+	resp, err := b.cmdClient.Post(b.baseURL+"/player/volume", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

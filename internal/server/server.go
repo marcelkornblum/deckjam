@@ -704,9 +704,10 @@ func (s *Server) handleSkipVote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if immediate skip conditions met:
-	// If guest_id == np.added_by_id OR skipVotes >= threshold
+	// If guest_id == np.added_by_id OR skipVotes >= threshold OR !playerStatus.Playing (stuck/paused track escape hatch)
+	playerStatus := s.coordinator.GetStatus(req.GuestID)
 	skipped := false
-	if req.GuestID == np.AddedByID || skipVotes >= threshold {
+	if req.GuestID == np.AddedByID || skipVotes >= threshold || !playerStatus.Playing {
 		_ = s.coordinator.SkipCurrentTrack()
 		skipped = true
 	}

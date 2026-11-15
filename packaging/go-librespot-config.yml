@@ -15,6 +15,12 @@ audio_backend: "pulseaudio"
 # Zeroconf / Spotify Connect discovery
 zeroconf_enabled: false
 
+# Firewall friendly ports (443/80 before 4070) for mobile hotspot NATs and event firewalls
+prefer_firewall_friendly_ports: true
+
+# Disable autoplay so go-librespot cleanly emits stopped/not_playing at track end
+disable_autoplay: true
+
 # Credentials configuration: device_auth for frictionless 1-tap phone hotspot pairing
 credentials:
   type: "device_auth"
