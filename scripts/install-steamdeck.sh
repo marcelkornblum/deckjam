@@ -39,22 +39,22 @@ export PATH="$BIN_DIR:$PATH"
 
 # 2. Build or Copy deckjam Binary (atomic mv avoids 'Text file busy' if running)
 echo "[+] Step 1: Installing deckjam binary..."
-if [ -f "$REPO_ROOT/deckjam" ] && [ -x "$REPO_ROOT/deckjam" ]; then
-    echo "    Found prebuilt binary at $REPO_ROOT/deckjam. Installing..."
-    cp -f "$REPO_ROOT/deckjam" "$BIN_DIR/deckjam.tmp"
-    chmod +x "$BIN_DIR/deckjam.tmp"
-    mv -f "$BIN_DIR/deckjam.tmp" "$BIN_DIR/deckjam"
-elif [ -f "$REPO_ROOT/bin/deckjam-linux-amd64.gz" ]; then
-    echo "    Extracting prebuilt binary to $BIN_DIR/deckjam..."
+if [ -f "$REPO_ROOT/bin/deckjam-linux-amd64.gz" ] && { [ ! -x "$REPO_ROOT/deckjam" ] || [ "$REPO_ROOT/bin/deckjam-linux-amd64.gz" -nt "$REPO_ROOT/deckjam" ]; }; then
+    echo "    Extracting prebuilt binary from bin/deckjam-linux-amd64.gz to $BIN_DIR/deckjam..."
     gunzip -c "$REPO_ROOT/bin/deckjam-linux-amd64.gz" > "$BIN_DIR/deckjam.tmp"
     chmod +x "$BIN_DIR/deckjam.tmp"
     mv -f "$BIN_DIR/deckjam.tmp" "$BIN_DIR/deckjam"
     echo "    Successfully installed $BIN_DIR/deckjam."
+elif [ -f "$REPO_ROOT/deckjam" ] && [ -x "$REPO_ROOT/deckjam" ]; then
+    echo "    Found fresher local binary at $REPO_ROOT/deckjam. Installing..."
+    cp -f "$REPO_ROOT/deckjam" "$BIN_DIR/deckjam.tmp"
+    chmod +x "$BIN_DIR/deckjam.tmp"
+    mv -f "$BIN_DIR/deckjam.tmp" "$BIN_DIR/deckjam"
 elif command -v go >/dev/null 2>&1 && [ -f "$REPO_ROOT/go.mod" ]; then
     echo "    Building deckjam from source with Go..."
     (
         cd "$REPO_ROOT"
-        go build -o "$BIN_DIR/deckjam.tmp" ./cmd/deckjam
+        CGO_ENABLED=0 go build -o "$BIN_DIR/deckjam.tmp" ./cmd/deckjam
     )
     chmod +x "$BIN_DIR/deckjam.tmp"
     mv -f "$BIN_DIR/deckjam.tmp" "$BIN_DIR/deckjam"
@@ -119,24 +119,31 @@ else
     fi
 fi
 
-# 5. Deploy go-librespot config
-echo "[+] Step 4: Configuring go-librespot..."
+# 5. Create Audio FIFO & Deploy go-librespot config
+echo "[+] Step 4: Configuring PipeWire Audio FIFO & go-librespot..."
+AUDIO_FIFO="${XDG_RUNTIME_DIR:-/tmp}/deckjam-audio.fifo"
+if [ ! -p "$AUDIO_FIFO" ]; then
+    rm -f "$AUDIO_FIFO" 2>/dev/null || true
+    mkfifo -m 0600 "$AUDIO_FIFO"
+fi
+
 CONFIG_FILE="$CONFIG_DIR/config.yml"
 CONFIG_SRC="$REPO_ROOT/packaging/go-librespot-config.yml"
 
-# Check if config needs updating (e.g. if it still has zeroconf type)
+# Upgrade config when --force is set or when older pulseaudio / firewall-port / zeroconf keys exist
 NEEDS_CONFIG_UPDATE=0
 if [ ! -f "$CONFIG_FILE" ] || [ "$FORCE" -eq 1 ]; then
     NEEDS_CONFIG_UPDATE=1
-elif grep -q 'type: "zeroconf"' "$CONFIG_FILE" 2>/dev/null; then
-    echo "    Found legacy zeroconf credentials in $CONFIG_FILE. Updating to device_auth..."
+elif grep -Eq 'type: "zeroconf"|audio_backend: "pulseaudio"|prefer_firewall_friendly_ports: true|normalisation_enabled:' "$CONFIG_FILE" 2>/dev/null; then
+    echo "    Upgrading $CONFIG_FILE to verified PipeWire FIFO bridge configuration..."
     NEEDS_CONFIG_UPDATE=1
 fi
 
 if [ "$NEEDS_CONFIG_UPDATE" -eq 1 ]; then
     if [ -f "$CONFIG_SRC" ]; then
-        cp -f "$CONFIG_SRC" "$CONFIG_FILE"
-        echo "    Wrote SteamOS configuration to $CONFIG_FILE (preserved state.json if present)."
+        sed "s|audio_output_pipe: .*|audio_output_pipe: \"${AUDIO_FIFO}\"|" "$CONFIG_SRC" > "$CONFIG_FILE.tmp"
+        mv -f "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+        echo "    Wrote SteamOS PipeWire FIFO configuration to $CONFIG_FILE (preserved state.json if present)."
     fi
 else
     echo "    Existing configuration preserved at $CONFIG_FILE."
@@ -153,13 +160,11 @@ cp -f "$REPO_ROOT/scripts/run-tunnel.sh" "$SHARE_DECKJAM_DIR/run-tunnel.sh"
 chmod +x "$SHARE_DECKJAM_DIR/run-tunnel.sh"
 
 if command -v systemctl >/dev/null 2>&1; then
-    echo "    Reloading user systemd daemon and enabling services..."
+    echo "    Reloading user systemd daemon and restarting services..."
     systemctl --user daemon-reload || true
-    systemctl --user enable --now go-librespot.service 2>/dev/null || true
-    systemctl --user enable --now deckjam.service 2>/dev/null || true
-    systemctl --user enable --now deckjam-tunnel.service 2>/dev/null || true
-    systemctl --user restart go-librespot.service 2>/dev/null || true
+    systemctl --user enable deckjam.service go-librespot.service deckjam-tunnel.service 2>/dev/null || true
     systemctl --user restart deckjam.service 2>/dev/null || true
+    systemctl --user restart go-librespot.service 2>/dev/null || true
     systemctl --user restart deckjam-tunnel.service 2>/dev/null || true
 fi
 

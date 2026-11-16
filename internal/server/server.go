@@ -197,6 +197,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/skip-vote", s.handleSkipVote)
 	mux.HandleFunc("/api/host/verify", s.handleHostVerify)
 	mux.HandleFunc("/api/host/control", s.handleHostControl)
+	mux.HandleFunc("/api/audio-test", s.handleAudioTest)
 	mux.HandleFunc("/api/artwork/", s.handleArtwork)
 	mux.HandleFunc("/api/qr.svg", s.handleQRSVG)
 	mux.HandleFunc("/api/shortcuts/http-shortcuts.json", s.handleHTTPShortcuts)
@@ -264,6 +265,11 @@ func (s *Server) progressLoop() {
 		payload := ProgressPayload{
 			Playing:           status.Playing,
 			Paused:            status.Paused,
+			Buffering:         status.Buffering,
+			AudioVerified:     status.AudioVerified,
+			AudioSinkName:     status.AudioSinkName,
+			AudioPeakPct:      status.AudioPeakPct,
+			LastError:         status.LastError,
 			PositionMS:        status.PositionMS,
 			DurationMS:        status.DurationMS,
 			SkipVotes:         status.SkipVotes,
@@ -799,6 +805,8 @@ func (s *Server) handleHostControl(w http.ResponseWriter, r *http.Request) {
 		if req.Settings.PlayerBackend != "" {
 			s.coordinator.SetBackend(req.Settings.PlayerBackend)
 		}
+	case "test_audio":
+		_, _ = s.coordinator.PlayTestTone(650)
 	default:
 		http.Error(w, fmt.Sprintf("Unknown action: %s", req.Action), http.StatusBadRequest)
 		return
@@ -809,6 +817,40 @@ func (s *Server) handleHostControl(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"ok": true,
+	})
+}
+
+func (s *Server) handleAudioTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats, err := s.coordinator.PlayTestTone(650)
+	s.BroadcastState()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":             false,
+			"error":          err.Error(),
+			"audio_verified": stats.Verified,
+			"audio_player":   stats.PlayerCmd,
+			"audio_sink":     stats.SinkName,
+			"bytes_per_sec":  stats.BytesPerSec,
+			"peak_pct":       stats.PeakPct,
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":             true,
+		"audio_verified": stats.Verified,
+		"audio_player":   stats.PlayerCmd,
+		"audio_sink":     stats.SinkName,
+		"bytes_per_sec":  stats.BytesPerSec,
+		"peak_pct":       stats.PeakPct,
 	})
 }
 

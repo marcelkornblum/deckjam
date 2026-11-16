@@ -100,6 +100,14 @@
         </div>
       </div>
 
+      <!-- Ground-Truth Speaker Output Verification Bar -->
+      <div id="audioOutBar" style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 10px; margin:8px 0 6px 0; border-radius:8px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.07); font-size:12px;">
+        <span id="audioOutStatusText" style="color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">🔈 Checking Steam Deck audio out...</span>
+        <button id="btnTestSpeaker" type="button" class="icon-btn" style="height:28px; padding:0 10px; font-size:11px; flex-shrink:0;" title="Play a 0.7s chime on Steam Deck / Bluetooth speaker">
+          <span>🔊 Test Speaker</span>
+        </button>
+      </div>
+
       <!-- Skip Vote & Social Actions -->
       <div class="np-actions">
         <button id="btnVoteSkip" class="btn-skip-vote" disabled>
@@ -352,10 +360,10 @@
           <div class="form-group">
             <label class="form-label" for="hostBackendSelect">Audio Player Engine</label>
             <select id="hostBackendSelect" class="form-select">
-              <option value="auto">Auto (librespot &gt; MPRIS &gt; Mock)</option>
+              <option value="auto">Auto (go-librespot &gt; Spotify MPRIS)</option>
               <option value="librespot">go-librespot Headless</option>
               <option value="mpris">Spotify Flatpak MPRIS</option>
-              <option value="mock">Simulated / Preview Engine</option>
+              <option value="mock">Simulated / Preview Engine (No Audio)</option>
             </select>
           </div>
 

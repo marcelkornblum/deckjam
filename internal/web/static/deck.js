@@ -149,16 +149,8 @@
       el.stageOnlineGuests.textContent = `${state.online_guests} guest${state.online_guests === 1 ? '' : 's'} online`;
     }
 
-    // Backend pill
-    const activeBackend = (state.player && state.player.active_backend) || (state.settings && state.settings.player_backend) || 'librespot';
-    el.backendDot.style.background = 'var(--deck-emerald)';
-    if (activeBackend === 'librespot') {
-      el.backendName.textContent = 'go-librespot Ready';
-    } else if (activeBackend === 'mpris') {
-      el.backendName.textContent = 'Spotify App (MPRIS)';
-    } else {
-      el.backendName.textContent = 'Preview Audio Engine';
-    }
+    // Backend & Verified Audio Out pill
+    renderStageBackendPill(state.player);
 
     // Spotify Pairing Banner
     if (el.deckPairBanner) {
@@ -191,6 +183,35 @@
     renderQueue(state.queue || []);
   }
 
+  function renderStageBackendPill(player) {
+    if (!player) return;
+    const sink = player.audio_sink_name || 'Steam Deck Out';
+    const isPlaying = !!(player.playing && !player.paused);
+    if (isPlaying && player.audio_verified) {
+      el.backendDot.style.background = 'var(--deck-emerald)';
+      const sig = player.audio_peak_pct > 0 ? ` (${player.audio_peak_pct}%)` : '';
+      el.backendName.textContent = `🔊 ${sink}${sig}`;
+    } else if (player.buffering) {
+      el.backendDot.style.background = 'var(--deck-amber)';
+      el.backendName.textContent = `Buffering → ${sink}`;
+    } else if (player.active_backend === 'waiting') {
+      el.backendDot.style.background = 'var(--deck-amber)';
+      el.backendName.textContent = player.librespot_pair_code ? 'Pair Spotify Above' : 'Connecting Spotify...';
+    } else if (player.last_error) {
+      el.backendDot.style.background = 'var(--deck-amber)';
+      el.backendName.textContent = player.last_error;
+    } else if (player.active_backend === 'librespot') {
+      el.backendDot.style.background = 'var(--deck-emerald)';
+      el.backendName.textContent = `🔈 ${sink} Ready`;
+    } else if (player.active_backend === 'mpris') {
+      el.backendDot.style.background = 'var(--deck-emerald)';
+      el.backendName.textContent = 'Spotify App (MPRIS)';
+    } else {
+      el.backendDot.style.background = 'var(--deck-amber)';
+      el.backendName.textContent = 'Preview Mode (No Audio)';
+    }
+  }
+
   function handleProgressUpdate(prog) {
     if (typeof prog.online_guests === 'number') {
       el.stageOnlineGuests.textContent = `${prog.online_guests} guest${prog.online_guests === 1 ? '' : 's'} online`;
@@ -200,6 +221,17 @@
     interpolatedPositionMs = prog.position_ms || 0;
     currentDurationMs = prog.duration_ms || (state.now_playing ? state.now_playing.duration_ms : 0);
     lastProgressReceivedAt = Date.now();
+
+    if (state.player) {
+      state.player.playing = !!prog.playing;
+      state.player.paused = !!prog.paused;
+      state.player.buffering = !!prog.buffering;
+      state.player.audio_verified = !!prog.audio_verified;
+      if (prog.audio_sink_name) state.player.audio_sink_name = prog.audio_sink_name;
+      if (typeof prog.audio_peak_pct === 'number') state.player.audio_peak_pct = prog.audio_peak_pct;
+      if (typeof prog.last_error === 'string') state.player.last_error = prog.last_error;
+      renderStageBackendPill(state.player);
+    }
 
     updateProgressUI();
 
@@ -241,8 +273,8 @@
       el.stageArtwork.src = '/icon.svg';
       el.stageTrackTitle.textContent = 'Waiting for Party Queue...';
       el.stageArtistName.textContent = 'Scan QR code to queue your tracks';
-      el.stageAlbumName.textContent = 'Local-first party jukebox';
-      el.stageStatusText.textContent = 'Ready for Tunes';
+      el.stageAlbumName.textContent = (player && player.audio_sink_name) ? `Audio Out: ${player.audio_sink_name}` : 'Local-first party jukebox';
+      el.stageStatusText.textContent = (player && player.active_backend === 'waiting') ? 'Connect Spotify' : 'Ready for Tunes';
       el.stageGuestCredit.style.display = 'none';
       el.stageEq.classList.remove('playing');
       isPlayingLocal = false;
@@ -270,12 +302,22 @@
       el.stageGuestCredit.style.display = 'none';
     }
 
-    const isPlaying = player && player.playing && !player.paused;
+    const isPlaying = !!(player && player.playing && !player.paused);
     isPlayingLocal = isPlaying;
-    el.stageStatusText.textContent = isPlaying ? 'Now Playing' : 'Paused';
     if (isPlaying) {
+      el.stageStatusText.textContent = (player && player.audio_verified) ? 'Now Playing • Verified' : 'Now Playing';
       el.stageEq.classList.add('playing');
+    } else if (player && player.paused) {
+      el.stageStatusText.textContent = 'Paused';
+      el.stageEq.classList.remove('playing');
+    } else if (player && player.active_backend === 'waiting') {
+      el.stageStatusText.textContent = 'Waiting for Spotify';
+      el.stageEq.classList.remove('playing');
+    } else if (player && player.buffering) {
+      el.stageStatusText.textContent = 'Connecting Audio...';
+      el.stageEq.classList.remove('playing');
     } else {
+      el.stageStatusText.textContent = 'Loading Track...';
       el.stageEq.classList.remove('playing');
     }
 
@@ -378,6 +420,32 @@
       isPinVisible = !isPinVisible;
       updatePinDisplay();
     });
+
+    const btnTestSpeaker = document.getElementById('stageBtnTestSpeaker');
+    if (btnTestSpeaker) {
+      btnTestSpeaker.addEventListener('click', async () => {
+        btnTestSpeaker.disabled = true;
+        const orig = btnTestSpeaker.innerHTML;
+        btnTestSpeaker.innerHTML = '<span>🔊 Playing...</span>';
+        try {
+          const res = await fetch('/api/audio-test', { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.ok) {
+            el.backendDot.style.background = 'var(--deck-emerald)';
+            el.backendName.textContent = `✅ Verified: ${data.audio_sink || 'Audio Out'}`;
+          } else {
+            el.backendDot.style.background = 'var(--deck-amber)';
+            el.backendName.textContent = `⚠️ ${data.error || 'Speaker test failed'}`;
+          }
+          setTimeout(fetchState, 1200);
+        } catch {
+          el.backendName.textContent = '⚠️ Speaker test request failed';
+        } finally {
+          btnTestSpeaker.disabled = false;
+          btnTestSpeaker.innerHTML = orig;
+        }
+      });
+    }
   }
 
   function init() {

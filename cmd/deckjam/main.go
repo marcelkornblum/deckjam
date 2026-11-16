@@ -36,6 +36,9 @@ func main() {
 	dataDirFlag := flag.String("data-dir", getEnv("DECKJAM_DATA_DIR", defaultDataDir()), "Data directory for SQLite database")
 	librespotURLFlag := flag.String("librespot-url", getEnv("DECKJAM_LIBRESPOT_URL", "http://127.0.0.1:3678"), "go-librespot REST API URL")
 	backendFlag := flag.String("backend", getEnv("DECKJAM_BACKEND", "auto"), "Playback backend: auto | librespot | mpris | mock")
+	audioFIFOFlag := flag.String("audio-fifo", player.DefaultAudioFIFOPath(), "Named pipe (FIFO) path for go-librespot PCM verification bridge")
+	audioCmdFlag := flag.String("audio-cmd", getEnv("DECKJAM_AUDIO_CMD", ""), "Optional override command for raw s16le 44.1kHz stereo audio output")
+	testAudioFlag := flag.Bool("test-audio", false, "Play a 0.7s stereo verification chime to SteamOS audio out and exit")
 	hostPINFlag := flag.String("host-pin", getEnv("DECKJAM_HOST_PIN", ""), "Host PIN override (optional; 4-digit PIN generated in SQLite if unset)")
 	hostnameFlag := flag.String("hostname", getEnv("DECKJAM_HOSTNAME", ""), "Hostname override for join URL (default auto-detected LAN IP)")
 	qrFlag := flag.String("qr", "", "Print terminal QR code for the given URL/string to stdout and exit")
@@ -50,6 +53,28 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(terminalQR)
+		os.Exit(0)
+	}
+
+	// If --test-audio flag provided, run standalone hardware speaker chime test and exit
+	if *testAudioFlag {
+		fifo := *audioFIFOFlag
+		if fifo == "" {
+			fifo = "/tmp/deckjam-audio-test.fifo"
+		}
+		bridge, err := player.NewAudioBridge(fifo, *audioCmdFlag, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "AudioBridge init error: %v\n", err)
+			os.Exit(1)
+		}
+		defer bridge.Close()
+		stats, err := bridge.PlayTestTone(700)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Audio output test FAILED: %v (sink=%s player=%s)\n", err, stats.SinkName, stats.PlayerCmd)
+			os.Exit(1)
+		}
+		fmt.Printf("Audio output VERIFIED: sink=%q player=%q rate=%d B/s peak=%d%%\n",
+			stats.SinkName, stats.PlayerCmd, stats.BytesPerSec, stats.PeakPct)
 		os.Exit(0)
 	}
 
@@ -85,9 +110,14 @@ func main() {
 	activePIN, _ := st.GetHostPIN()
 	log.Printf("Host PIN: %s", activePIN)
 
+	fifoPath := *audioFIFOFlag
+	if *backendFlag == "mock" && os.Getenv("DECKJAM_AUDIO_FIFO") == "" {
+		fifoPath = ""
+	}
+
 	// Resolver & Player Coordinator
 	resolver := spotify.NewResolver(st)
-	coordinator := player.NewCoordinator(st, *librespotURLFlag, *backendFlag)
+	coordinator := player.NewCoordinatorWithAudio(st, *librespotURLFlag, *backendFlag, fifoPath, *audioCmdFlag)
 	defer coordinator.Close()
 
 	// Server

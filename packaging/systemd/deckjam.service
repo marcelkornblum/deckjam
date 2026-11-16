@@ -1,16 +1,19 @@
 [Unit]
 Description=DeckJam Jukebox Server
 Documentation=https://github.com/marcelkornblum/deckjam
-After=network.target sound.target go-librespot.service
+After=network.target sound.target pipewire.service pipewire-pulse.service
 Wants=go-librespot.service
 
 [Service]
 Type=simple
-Environment=PULSE_RUNTIME_PATH=%t/pulse
 Environment=XDG_RUNTIME_DIR=%t
-ExecStart=%h/.local/bin/deckjam --addr 0.0.0.0:8080
+Environment=PIPEWIRE_RUNTIME_DIR=%t
+Environment=PULSE_RUNTIME_PATH=%t/pulse
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStartPre=/bin/sh -c 'p="%t/deckjam-audio.fifo"; [ -p "$p" ] || { rm -f "$p"; mkfifo -m 0600 "$p"; }'
+ExecStart=%h/.local/bin/deckjam --addr 0.0.0.0:8080 --backend auto --audio-fifo %t/deckjam-audio.fifo
 Restart=on-failure
-RestartSec=3
+RestartSec=2
 
 [Install]
 WantedBy=default.target

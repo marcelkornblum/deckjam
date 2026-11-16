@@ -107,6 +107,9 @@
     progressBarFill: document.getElementById('progressBarFill'),
     timeElapsed: document.getElementById('timeElapsed'),
     timeDuration: document.getElementById('timeDuration'),
+    audioOutBar: document.getElementById('audioOutBar'),
+    audioOutStatusText: document.getElementById('audioOutStatusText'),
+    btnTestSpeaker: document.getElementById('btnTestSpeaker'),
     btnVoteSkip: document.getElementById('btnVoteSkip'),
     btnVoteSkipLabel: document.getElementById('btnVoteSkipLabel'),
 
@@ -428,6 +431,31 @@
     el.btnDownloadHttpShortcuts.href = `/api/shortcuts/http-shortcuts.json?guest_id=${encodeURIComponent(guest.id)}&guest_name=${encodeURIComponent(guest.name)}`;
   }
 
+  function renderAudioOutStatus(player) {
+    if (!el.audioOutStatusText) return;
+    if (!player) {
+      el.audioOutStatusText.textContent = '🔈 Checking Steam Deck audio out...';
+      el.audioOutStatusText.style.color = 'var(--text-secondary)';
+      return;
+    }
+    const sink = player.audio_sink_name || 'Steam Deck Audio Out';
+    const isPlaying = !!(player.playing && !player.paused);
+    if (isPlaying && player.audio_verified) {
+      const sig = player.audio_peak_pct > 0 ? ` • ${player.audio_peak_pct}% signal` : ' • PCM active';
+      el.audioOutStatusText.textContent = `🔊 ${sink}${sig}`;
+      el.audioOutStatusText.style.color = 'var(--accent-emerald)';
+    } else if (player.buffering) {
+      el.audioOutStatusText.textContent = `⏳ Buffering audio stream → ${sink}...`;
+      el.audioOutStatusText.style.color = 'var(--accent-amber)';
+    } else if (player.last_error) {
+      el.audioOutStatusText.textContent = `⚠️ ${player.last_error}`;
+      el.audioOutStatusText.style.color = 'var(--accent-amber)';
+    } else {
+      el.audioOutStatusText.textContent = `🔈 Output Ready: ${sink}`;
+      el.audioOutStatusText.style.color = 'var(--text-secondary)';
+    }
+  }
+
   function handleProgressUpdate(prog) {
     if (typeof prog.online_guests === 'number') {
       el.onlineCountBadge.textContent = `(${prog.online_guests} online)`;
@@ -437,6 +465,17 @@
     interpolatedPositionMs = prog.position_ms || 0;
     currentDurationMs = prog.duration_ms || (state.now_playing ? state.now_playing.duration_ms : 0);
     lastProgressReceivedAt = Date.now();
+
+    if (state.player) {
+      state.player.playing = !!prog.playing;
+      state.player.paused = !!prog.paused;
+      state.player.buffering = !!prog.buffering;
+      state.player.audio_verified = !!prog.audio_verified;
+      if (prog.audio_sink_name) state.player.audio_sink_name = prog.audio_sink_name;
+      if (typeof prog.audio_peak_pct === 'number') state.player.audio_peak_pct = prog.audio_peak_pct;
+      if (typeof prog.last_error === 'string') state.player.last_error = prog.last_error;
+      renderAudioOutStatus(state.player);
+    }
 
     updateProgressUI();
 
@@ -474,11 +513,13 @@
 
   // --- Render Now Playing Hero ---
   function renderNowPlaying(track, player) {
+    renderAudioOutStatus(player);
+
     if (!track) {
       el.npArtwork.src = '/icon.svg';
       el.npTitle.textContent = 'Party queue is empty';
       el.npArtist.textContent = 'Add your favorite Spotify tracks below!';
-      el.npStatusText.textContent = 'Waiting';
+      el.npStatusText.textContent = (player && player.active_backend === 'waiting') ? 'Waiting for Spotify' : 'Ready';
       el.npStatusTag.style.color = 'var(--text-tertiary)';
       el.npQueuedBy.style.display = 'none';
       el.btnVoteSkip.disabled = true;
@@ -506,16 +547,22 @@
       el.npQueuedBy.style.display = 'none';
     }
 
-    const isPlaying = player && player.playing && !player.paused;
+    const isPlaying = !!(player && player.playing && !player.paused);
     isPlayingLocal = isPlaying;
     if (isPlaying) {
-      el.npStatusText.textContent = 'Now Playing';
+      el.npStatusText.textContent = (player && player.audio_verified) ? 'Now Playing • Verified' : 'Now Playing';
       el.npStatusTag.style.color = 'var(--accent-emerald)';
     } else if (player && player.paused) {
       el.npStatusText.textContent = 'Paused';
       el.npStatusTag.style.color = 'var(--accent-amber)';
+    } else if (player && player.active_backend === 'waiting') {
+      el.npStatusText.textContent = 'Waiting for Spotify';
+      el.npStatusTag.style.color = 'var(--accent-amber)';
+    } else if (player && player.buffering) {
+      el.npStatusText.textContent = 'Connecting Audio...';
+      el.npStatusTag.style.color = 'var(--accent-amber)';
     } else {
-      el.npStatusText.textContent = 'Loading Audio...';
+      el.npStatusText.textContent = 'Queued / Stalled';
       el.npStatusTag.style.color = 'var(--accent-amber)';
     }
 
@@ -1135,6 +1182,29 @@
         sendHostCommand('clear_queue');
       }
     });
+
+    if (el.btnTestSpeaker) {
+      el.btnTestSpeaker.addEventListener('click', async () => {
+        el.btnTestSpeaker.disabled = true;
+        const origHtml = el.btnTestSpeaker.innerHTML;
+        el.btnTestSpeaker.innerHTML = '<span>🔊 Playing Chime...</span>';
+        try {
+          const res = await fetch('/api/audio-test', { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.ok) {
+            showToast(`✅ Speaker Verified: ${data.audio_sink || 'Steam Deck Out'} (${data.peak_pct || 30}% signal)`, 'success', 4500);
+          } else {
+            showToast(`⚠️ Speaker Test Failed: ${data.error || 'Check PipeWire / Speaker power'}`, 'error', 5500);
+          }
+          fetchState();
+        } catch {
+          showToast('⚠️ Could not reach DeckJam server for speaker test', 'error');
+        } finally {
+          el.btnTestSpeaker.disabled = false;
+          el.btnTestSpeaker.innerHTML = origHtml;
+        }
+      });
+    }
 
     el.btnClearFallbackBtn.addEventListener('click', () => {
       if (confirm('Clear the fallback pool tracks?')) {

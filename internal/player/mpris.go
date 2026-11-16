@@ -281,7 +281,12 @@ func (b *MPRISBackend) GetStatus() PlayerStatus {
 }
 
 func (b *MPRISBackend) Close() error {
-	close(b.stopCh)
+	select {
+	case <-b.stopCh:
+		return nil
+	default:
+		close(b.stopCh)
+	}
 	if b.conn != nil {
 		return b.conn.Close()
 	}

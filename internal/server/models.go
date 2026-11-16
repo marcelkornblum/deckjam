@@ -28,14 +28,19 @@ type StateSnapshot struct {
 
 // ProgressPayload represents the 1s ticker progress event payload.
 type ProgressPayload struct {
-	Playing           bool  `json:"playing"`
-	Paused            bool  `json:"paused"`
-	PositionMS        int   `json:"position_ms"`
-	DurationMS        int   `json:"duration_ms"`
-	SkipVotes         int   `json:"skip_votes"`
-	SkipVoteThreshold int   `json:"skip_vote_threshold"`
-	OnlineGuests      int   `json:"online_guests"`
-	ServerTimeMS      int64 `json:"server_time_ms"`
+	Playing           bool   `json:"playing"`
+	Paused            bool   `json:"paused"`
+	Buffering         bool   `json:"buffering"`
+	AudioVerified     bool   `json:"audio_verified"`
+	AudioSinkName     string `json:"audio_sink_name"`
+	AudioPeakPct      int    `json:"audio_peak_pct"`
+	LastError         string `json:"last_error"`
+	PositionMS        int    `json:"position_ms"`
+	DurationMS        int    `json:"duration_ms"`
+	SkipVotes         int    `json:"skip_votes"`
+	SkipVoteThreshold int    `json:"skip_vote_threshold"`
+	OnlineGuests      int    `json:"online_guests"`
+	ServerTimeMS      int64  `json:"server_time_ms"`
 }
 
 // SSEClient stores metadata for a connected SSE listener.

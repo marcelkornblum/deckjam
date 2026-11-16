@@ -1,22 +1,27 @@
 # ==============================================================================
 # go-librespot configuration template for SteamOS / Steam Deck
 # Installed to: ~/.config/go-librespot/config.yml
+# Verified against devgianlu/go-librespot v0.10.5 config_schema.json
 # ==============================================================================
 
 # Device identity advertised on Spotify Connect
 device_name: "Steam Deck Jam"
 device_type: "speaker"
 
-# Audio backend: pulseaudio routes directly through PipeWire-Pulse on SteamOS.
-# This works seamlessly in both Gaming Mode and Desktop Mode without taking exclusive
-# ALSA hardware locks away from Steam games or gamescope!
-audio_backend: "pulseaudio"
+# Audio backend: "pipe" writes raw 44.1kHz 16-bit stereo PCM to DeckJam's AudioBridge FIFO,
+# which verifies real-time non-zero waveform output and streams directly into SteamOS PipeWire
+# (pw-cat / pacat) -> Steam Deck Speakers or connected Bluetooth speaker (e.g. JBL PartyBox).
+audio_backend: "pipe"
+audio_output_pipe: "/tmp/deckjam-audio.fifo"
+audio_output_pipe_format: "s16le"
+audio_output_pipe_wait_for_reader: true
 
-# Zeroconf / Spotify Connect discovery
+# Zeroconf / Spotify Connect discovery (disabled in favor of 1-tap device_auth pairing)
 zeroconf_enabled: false
 
-# Firewall friendly ports (443/80 before 4070) for mobile hotspot NATs and event firewalls
-prefer_firewall_friendly_ports: true
+# Note: keep prefer_firewall_friendly_ports false (default :4070 AP connects in ~1s on phone hotspots,
+# whereas non-TLS handshakes on :443 get stalled/dropped by mobile carrier NATs).
+prefer_firewall_friendly_ports: false
 
 # Disable autoplay so go-librespot cleanly emits stopped/not_playing at track end
 disable_autoplay: true
@@ -25,10 +30,7 @@ disable_autoplay: true
 credentials:
   type: "device_auth"
 
-# Local encrypted audio cache
-# Crucial for road trips, camping, and shaky Wi-Fi / cell hotspot connections.
-# go-librespot caches encrypted CDN audio chunks locally up to 2GB with LRU eviction,
-# eliminating buffering and stuttering when replay occurs.
+# Local encrypted audio cache (2GB LRU for shaky hotspot / road-trip connections)
 cache:
   enabled: true
   dir: ""
@@ -40,7 +42,11 @@ server:
   address: "127.0.0.1"
   port: 3678
 
-# Volume and normalization settings
+# Bitrate, volume, and normalization settings (strictly conforming to config_schema.json)
+bitrate: 320
 volume_steps: 100
-initial_volume: 80
-normalisation_enabled: true
+initial_volume: 90
+ignore_last_volume: true
+external_volume: false
+normalisation_disabled: false
+normalisation_pregain: 3.0

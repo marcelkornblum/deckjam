@@ -31,6 +31,7 @@ type LibrespotBackend struct {
 	pairURL        string
 	daemonUp       bool
 	connected      bool // true when GET / returns 200 OK and playback_ready == true
+	lastError      string
 	lastPlayTime   time.Time
 	stopCh         chan struct{}
 	onTrackEnded   func()
@@ -270,16 +271,31 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 		switch ev.Event {
 		case "playback_ready":
 			b.mu.Lock()
+			b.daemonUp = true
 			b.connected = true
 			b.pairCode = ""
 			b.pairURL = ""
+			b.lastError = ""
 			b.mu.Unlock()
 
 		case "playback_error":
+			var d struct {
+				Error   string `json:"error"`
+				Message string `json:"message"`
+			}
+			errText := "Spotify playback error"
+			if json.Unmarshal(ev.Data, &d) == nil {
+				if d.Error != "" {
+					errText = d.Error
+				} else if d.Message != "" {
+					errText = d.Message
+				}
+			}
 			b.mu.Lock()
 			b.playing = false
 			b.paused = false
 			b.hasLoadedTrack = false
+			b.lastError = errText
 			b.mu.Unlock()
 
 		case "playing":
@@ -287,6 +303,7 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 			b.playing = true
 			b.paused = false
 			b.hasLoadedTrack = true
+			b.lastError = ""
 			var d struct {
 				URI string `json:"uri"`
 			}
@@ -361,6 +378,27 @@ func (b *LibrespotBackend) Available() bool {
 	return b.connected
 }
 
+// DaemonUp reports whether the local go-librespot HTTP API is reachable.
+func (b *LibrespotBackend) DaemonUp() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.daemonUp
+}
+
+// LastError returns the most recent playback/API error reported by go-librespot.
+func (b *LibrespotBackend) LastError() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.lastError
+}
+
+// IsTransportPlaying reports whether go-librespot metadata indicates active unpaused playback.
+func (b *LibrespotBackend) IsTransportPlaying() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.playing && !b.paused && b.hasLoadedTrack
+}
+
 // HasLoadedTrack reports whether librespot currently has a track loaded (matching uri if specified).
 func (b *LibrespotBackend) HasLoadedTrack(uri string) bool {
 	b.mu.RLock()
@@ -377,12 +415,25 @@ func (b *LibrespotBackend) Play(uri string) error {
 	})
 	resp, err := b.cmdClient.Post(b.baseURL+"/player/play", "application/json", bytes.NewReader(payload))
 	if err != nil {
+		b.mu.Lock()
+		b.lastError = fmt.Sprintf("go-librespot play request failed: %v", err)
+		b.mu.Unlock()
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("librespot play returned %d", resp.StatusCode)
+		var errBuf [256]byte
+		n, _ := resp.Body.Read(errBuf[:])
+		bodyMsg := strings.TrimSpace(string(errBuf[:n]))
+		errMsg := fmt.Sprintf("librespot play returned %d", resp.StatusCode)
+		if bodyMsg != "" {
+			errMsg = fmt.Sprintf("librespot play (%d): %s", resp.StatusCode, bodyMsg)
+		}
+		b.mu.Lock()
+		b.lastError = errMsg
+		b.mu.Unlock()
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	b.mu.Lock()
@@ -391,6 +442,7 @@ func (b *LibrespotBackend) Play(uri string) error {
 	b.hasLoadedTrack = true
 	b.currentURI = uri
 	b.positionMS = 0
+	b.lastError = ""
 	b.lastPlayTime = time.Now()
 	b.mu.Unlock()
 	return nil
@@ -526,8 +578,10 @@ func (b *LibrespotBackend) GetStatus() PlayerStatus {
 		DurationMS:         b.durationMS,
 		Volume:             b.volume,
 		LibrespotConnected: b.connected,
+		LibrespotDaemonUp:  b.daemonUp,
 		LibrespotPairCode:  b.pairCode,
 		LibrespotPairURL:   b.pairURL,
+		LastError:          b.lastError,
 	}
 }
 

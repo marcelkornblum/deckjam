@@ -9,12 +9,15 @@ import (
 	"github.com/marcelkornblum/deckjam/internal/store"
 )
 
-// Coordinator coordinates between the active player backend, the SQLite store, and queue advancement.
+// Coordinator coordinates between the active player backend, the SQLite store,
+// real-time PipeWire PCM audio verification, and queue advancement.
 type Coordinator struct {
-	store     *store.Store
-	librespot *LibrespotBackend
-	mpris     *MPRISBackend
-	mock      *MockBackend
+	store       *store.Store
+	librespot   *LibrespotBackend
+	mpris       *MPRISBackend
+	mock        *MockBackend
+	waiting     *WaitingBackend
+	audioBridge *AudioBridge
 
 	modeMu     sync.RWMutex
 	activeMode string // "auto", "librespot", "mpris", "mock"
@@ -33,8 +36,13 @@ type Coordinator struct {
 	listeners   []chan struct{}
 }
 
-// NewCoordinator creates a new multi-backend Player Coordinator.
+// NewCoordinator creates a new multi-backend Player Coordinator without an OS FIFO bridge (used in unit tests).
 func NewCoordinator(st *store.Store, librespotURL string, configuredBackend string) *Coordinator {
+	return NewCoordinatorWithAudio(st, librespotURL, configuredBackend, "", "")
+}
+
+// NewCoordinatorWithAudio creates a new Coordinator wired to a real-time PCM FIFO -> PipeWire AudioBridge.
+func NewCoordinatorWithAudio(st *store.Store, librespotURL string, configuredBackend string, audioFIFOPath string, audioCmd string) *Coordinator {
 	if configuredBackend == "" {
 		configuredBackend = "auto"
 	}
@@ -42,11 +50,23 @@ func NewCoordinator(st *store.Store, librespotURL string, configuredBackend stri
 	c := &Coordinator{
 		store:      st,
 		activeMode: configuredBackend,
+		waiting:    NewWaitingBackend(),
 		stopCh:     make(chan struct{}),
 	}
 
 	onTrackEnded := func() {
 		go c.HandleTrackEnded()
+	}
+
+	if audioFIFOPath != "" {
+		ab, err := NewAudioBridge(audioFIFOPath, audioCmd, func() {
+			c.notifyStateChanged()
+		})
+		if err != nil {
+			log.Printf("[player] Warning: failed to initialize AudioBridge at %s: %v", audioFIFOPath, err)
+		} else {
+			c.audioBridge = ab
+		}
 	}
 
 	c.librespot = NewLibrespotBackend(librespotURL, onTrackEnded)
@@ -56,6 +76,14 @@ func NewCoordinator(st *store.Store, librespotURL string, configuredBackend stri
 	go c.watchdogLoop()
 
 	return c
+}
+
+// PlayTestTone triggers a hardware speaker test chime through the PipeWire AudioBridge.
+func (c *Coordinator) PlayTestTone(durationMS int) (AudioBridgeStats, error) {
+	if c.audioBridge == nil {
+		return AudioBridgeStats{}, fmt.Errorf("audio bridge is not enabled on this server instance")
+	}
+	return c.audioBridge.PlayTestTone(durationMS)
 }
 
 func (c *Coordinator) isUserPaused() bool {
@@ -99,23 +127,40 @@ func (c *Coordinator) watchdogLoop() {
 				settings, err := c.store.GetSettings()
 				if err == nil {
 					queued, _ := c.store.GetQueuedItems(settings.QueueMode, "")
-					if len(queued) > 0 {
+					if len(queued) > 0 && status.ActiveBackend != "waiting" {
 						c.HandleTrackEnded()
 					}
 				}
 				continue
 			}
 
-			if np != nil && np.SpotifyURI != "" {
-				needsPlay := (!status.Playing && !status.Paused) ||
-					(status.Paused && !c.isUserPaused() && status.ActiveBackend == "librespot") ||
-					(status.ActiveBackend == "librespot" && !c.librespot.HasLoadedTrack(np.SpotifyURI))
+			// Do not burn retries or skip guest tracks while waiting for Spotify pairing / daemon connection!
+			if status.ActiveBackend == "waiting" {
+				continue
+			}
+
+			if np.SpotifyURI != "" {
+				var needsPlay bool
+				cooldown := 3500 * time.Millisecond
+
+				if status.ActiveBackend == "librespot" {
+					transportPlaying := c.librespot.IsTransportPlaying() && c.librespot.HasLoadedTrack(np.SpotifyURI)
+					if !transportPlaying {
+						needsPlay = true
+					} else if c.audioBridge.Enabled() && !c.audioBridge.Stats().StreamActive {
+						// Transport claims playing, but zero PCM bytes are reaching PipeWire — allow 8s CDN buffer grace
+						cooldown = 8 * time.Second
+						needsPlay = true
+					}
+				} else {
+					needsPlay = !status.Playing && !status.Paused
+				}
 
 				if !needsPlay {
 					continue
 				}
 
-				if time.Since(c.getLastPlayAttempt()) < 3500*time.Millisecond {
+				if time.Since(c.getLastPlayAttempt()) < cooldown {
 					continue
 				}
 
@@ -158,11 +203,13 @@ func (c *Coordinator) watchdogLoop() {
 // SetBackend changes configured backend mode.
 func (c *Coordinator) SetBackend(mode string) {
 	c.modeMu.Lock()
-	defer c.modeMu.Unlock()
 	c.activeMode = mode
+	c.modeMu.Unlock()
+	c.notifyStateChanged()
 }
 
 // GetActiveBackend determines and returns the active backend based on configuration and availability.
+// CRITICAL: "auto" NEVER falls back to MockBackend so DeckJam never fakes "Now Playing" without real audio!
 func (c *Coordinator) GetActiveBackend() Backend {
 	c.modeMu.RLock()
 	mode := c.activeMode
@@ -182,9 +229,9 @@ func (c *Coordinator) GetActiveBackend() Backend {
 		if c.mpris.Available() {
 			return c.mpris
 		}
-		return c.mock
+		return c.waiting
 	default:
-		return c.mock
+		return c.waiting
 	}
 }
 
@@ -235,7 +282,7 @@ func (c *Coordinator) Resume() error {
 		c.notifyStateChanged()
 		return err
 	}
-	if !status.Playing && !status.Paused && np.SpotifyURI != "" {
+	if !status.Playing && !status.Buffering && !status.Paused && np.SpotifyURI != "" {
 		err := c.PlaySong(np.SpotifyURI, np.DurationMS)
 		c.notifyStateChanged()
 		return err
@@ -252,7 +299,7 @@ func (c *Coordinator) Resume() error {
 // PlayPause toggles playback.
 func (c *Coordinator) PlayPause() error {
 	status := c.GetStatus("")
-	if status.Playing && !status.Paused {
+	if (status.Playing || status.Buffering) && !status.Paused {
 		return c.Pause()
 	}
 	return c.Resume()
@@ -268,12 +315,15 @@ func (c *Coordinator) Seek(positionMS int) error {
 	return c.GetActiveBackend().Seek(positionMS)
 }
 
-// SetVolume sets player volume (0-100).
+// SetVolume sets player volume (0-100) and ensures the OS sink is unmuted.
 func (c *Coordinator) SetVolume(volume int) error {
-	return c.GetActiveBackend().SetVolume(volume)
+	go EnsureBluetoothSink()
+	err := c.GetActiveBackend().SetVolume(volume)
+	c.notifyStateChanged()
+	return err
 }
 
-// GetStatus returns the current consolidated PlayerStatus.
+// GetStatus returns the current consolidated PlayerStatus with ground-truth audio verification.
 func (c *Coordinator) GetStatus(guestID string) PlayerStatus {
 	c.modeMu.RLock()
 	mode := c.activeMode
@@ -284,12 +334,66 @@ func (c *Coordinator) GetStatus(guestID string) PlayerStatus {
 	st.ConfiguredBackend = mode
 	st.ActiveBackend = backend.Name()
 	st.LibrespotConnected = c.librespot.Available()
+	st.LibrespotDaemonUp = c.librespot.DaemonUp()
 	st.MPRISAvailable = c.mpris.Available()
 
-	// Always expose librespot pairing info so UI can guide pairing even when currently in mock fallback
+	// Always expose librespot pairing info so UI can guide 1-tap pairing when in waiting state
 	if pairCode, pairURL, _ := c.librespot.PairInfo(); pairCode != "" {
 		st.LibrespotPairCode = pairCode
 		st.LibrespotPairURL = pairURL
+	}
+
+	// Enrich with AudioBridge ground-truth PipeWire PCM metrics
+	if c.audioBridge != nil && c.audioBridge.Enabled() {
+		ab := c.audioBridge.Stats()
+		st.AudioPlayer = ab.PlayerCmd
+		st.AudioSinkName = ab.SinkName
+		st.AudioBytesPerSec = ab.BytesPerSec
+		st.AudioPeakPct = ab.PeakPct
+		st.AudioVerified = ab.Verified
+		if ab.LastError != "" {
+			st.LastError = ab.LastError
+		}
+
+		// Ground-truth verification gate for go-librespot:
+		// NEVER claim Playing=true unless real PCM audio bytes are actively streaming into SteamOS audio out!
+		if st.ActiveBackend == "librespot" && st.Playing && !st.Paused {
+			if ab.StreamActive {
+				st.Playing = true
+				st.Buffering = false
+				if !st.AudioVerified {
+					// Stream is actively clocking 44.1kHz frames to PipeWire during a quiet passage
+					st.AudioVerified = true
+				}
+			} else {
+				st.Playing = false
+				st.Buffering = true
+				st.AudioVerified = false
+			}
+		}
+	} else {
+		sink := GetCachedSinkInfo()
+		if sink.DisplayName != "" {
+			st.AudioSinkName = sink.DisplayName
+		} else if st.ActiveBackend == "mock" {
+			st.AudioSinkName = "Simulated Preview (No Speaker Out)"
+		}
+		if st.ActiveBackend == "mpris" && st.Playing && !st.Paused {
+			st.AudioVerified = true
+		}
+	}
+
+	if st.LastError == "" && c.librespot.LastError() != "" {
+		st.LastError = c.librespot.LastError()
+	}
+	if st.ActiveBackend == "waiting" && st.LastError == "" {
+		if st.LibrespotPairCode != "" {
+			st.LastError = "Tap 'Pair Spotify' above to connect your Spotify account"
+		} else if st.LibrespotDaemonUp {
+			st.LastError = "Connecting to Spotify servers over hotspot..."
+		} else {
+			st.LastError = "Waiting for local go-librespot audio daemon..."
+		}
 	}
 
 	// Enrich with skip vote stats from store if now_playing exists
@@ -385,7 +489,7 @@ func (c *Coordinator) CheckAutoPlay() {
 	}
 
 	status := c.GetStatus("")
-	if !status.Playing && !c.isUserPaused() {
+	if !status.Playing && !status.Buffering && !c.isUserPaused() {
 		if np.SpotifyURI != "" {
 			_ = c.PlaySong(np.SpotifyURI, np.DurationMS)
 			c.notifyStateChanged()
@@ -470,18 +574,21 @@ func (c *Coordinator) notifyStateChanged() {
 	}
 }
 
-// Close closes all backends.
+// Close closes all backends and the audio bridge idempotently.
 func (c *Coordinator) Close() {
 	c.stopOnce.Do(func() {
 		close(c.stopCh)
+		if c.librespot != nil {
+			_ = c.librespot.Close()
+		}
+		if c.mpris != nil {
+			_ = c.mpris.Close()
+		}
+		if c.mock != nil {
+			_ = c.mock.Close()
+		}
+		if c.audioBridge != nil {
+			_ = c.audioBridge.Close()
+		}
 	})
-	if c.librespot != nil {
-		_ = c.librespot.Close()
-	}
-	if c.mpris != nil {
-		_ = c.mpris.Close()
-	}
-	if c.mock != nil {
-		_ = c.mock.Close()
-	}
 }

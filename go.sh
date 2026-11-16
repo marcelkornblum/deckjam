@@ -2,6 +2,7 @@
 # ==============================================================================
 # DeckJam Turnkey Launcher (go.sh)
 # 100% foolproof, zero-keyboard turnkey Steam Deck party launcher over a Phone Hotspot.
+# Automatically verifies physical audio output on Steam Deck / Bluetooth speakers!
 # ==============================================================================
 set -euo pipefail
 
@@ -12,7 +13,7 @@ echo "=========================================================="
 echo "          DeckJam — Zero-Keyboard Turnkey Launcher        "
 echo "=========================================================="
 
-# 1. Run user-space installer with --force to ensure updated units & configs are active
+# 1. Run user-space installer with --force to ensure updated binary, FIFO & configs are active
 "$REPO_ROOT/scripts/install-steamdeck.sh" --force
 
 # 2. Wait up to 8s for deckjam backend to come online (http://127.0.0.1:8080/api/state)
@@ -27,7 +28,7 @@ for i in $(seq 1 40); do
 done
 
 HOST_PIN=""
-BT_SINK=""
+AUDIO_VERIFIED_MSG=""
 if [ "$BACKEND_READY" -ne 1 ]; then
     echo "[!] Warning: DeckJam backend did not respond within 8s."
 else
@@ -37,23 +38,45 @@ else
         HOST_PIN="$(echo "$STATE_JSON" | grep -o '"host_pin":"[^"]*"' | cut -d'"' -f4 || true)"
     fi
 
-    # Auto-route connected Bluetooth speaker (e.g. JBL PartyBox)
-    if command -v pactl >/dev/null 2>&1; then
-        BT_SINK="$(pactl list short sinks 2>/dev/null | awk '$2 ~ /^bluez_output\./ {print $2; exit}' || true)"
-        if [ -n "$BT_SINK" ]; then
-            pactl set-default-sink "$BT_SINK" >/dev/null 2>&1 || true
-            pactl set-sink-mute "$BT_SINK" 0 >/dev/null 2>&1 || true
-            pactl list short sink-inputs 2>/dev/null | awk '{print $1}' | while read -r input_id; do
-                [ -n "$input_id" ] && pactl move-sink-input "$input_id" "$BT_SINK" >/dev/null 2>&1 || true
-            done
-        fi
+    # Play audible 0.65s C-major verification chime through FIFO -> PipeWire -> Speaker/Bluetooth!
+    echo "[*] Playing hardware speaker verification chime..."
+    AUDIO_JSON="$(curl -s -m 5 -X POST http://127.0.0.1:8080/api/audio-test 2>/dev/null || true)"
+    if echo "$AUDIO_JSON" | grep -q '"ok":true'; then
+        SINK_NAME="$(echo "$AUDIO_JSON" | grep -o '"audio_sink":"[^"]*"' | cut -d'"' -f4 || echo "Steam Deck Out")"
+        PLAYER_CMD="$(echo "$AUDIO_JSON" | grep -o '"audio_player":"[^"]*"' | cut -d'"' -f4 || echo "PipeWire")"
+        PEAK_PCT="$(echo "$AUDIO_JSON" | grep -o '"peak_pct":[0-9]*' | cut -d':' -f2 || echo "30")"
+        AUDIO_VERIFIED_MSG="VERIFIED (${PLAYER_CMD} -> ${SINK_NAME}, ${PEAK_PCT}% signal)"
+    else
+        ERR_TXT="$(echo "$AUDIO_JSON" | grep -o '"error":"[^"]*"' | cut -d'"' -f4 || echo "Check speaker / PipeWire")"
+        AUDIO_VERIFIED_MSG="FAILED (${ERR_TXT})"
     fi
 fi
 
-# 3. Wait up to 8s for Cloudflare Quick Tunnel (if network connected)
+# 3. Wait up to 6s for go-librespot AP readiness or pairing code
+SPOTIFY_READY=0
+PAIR_CODE=""
+PAIR_URL=""
+for i in $(seq 1 24); do
+    ROOT_JSON="$(curl -fs -m 1 http://127.0.0.1:3678/ 2>/dev/null || true)"
+    if echo "$ROOT_JSON" | grep -q '"playback_ready":true'; then
+        SPOTIFY_READY=1
+        break
+    fi
+    AUTH_JSON="$(curl -fs -m 1 http://127.0.0.1:3678/auth/code 2>/dev/null || true)"
+    if [ -n "$AUTH_JSON" ]; then
+        PAIR_CODE="$(echo "$AUTH_JSON" | grep -o '"code":"[^"]*"' | cut -d'"' -f4 || true)"
+        PAIR_URL="$(echo "$AUTH_JSON" | grep -o '"url":"[^"]*"' | cut -d'"' -f4 || true)"
+        if [ -n "$PAIR_CODE" ]; then
+            break
+        fi
+    fi
+    sleep 0.25
+done
+
+# 4. Wait up to 6s for Cloudflare Quick Tunnel (if network connected)
 PUB_FILE="$HOME/.local/share/deckjam/public_url.txt"
 JOIN_URL=""
-for i in $(seq 1 40); do
+for i in $(seq 1 30); do
     if [ -f "$PUB_FILE" ]; then
         CANDIDATE="$(cat "$PUB_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
         if [[ "$CANDIDATE" =~ ^https:// ]]; then
@@ -80,17 +103,6 @@ if [ -z "$JOIN_URL" ]; then
     JOIN_URL="http://${LAN_IP}:8080"
 fi
 
-# 4. Check for Spotify Pair Code from go-librespot daemon
-PAIR_CODE=""
-PAIR_URL=""
-if curl -fs -m 2 http://127.0.0.1:3678/auth/code >/dev/null 2>&1; then
-    AUTH_JSON="$(curl -fs -m 2 http://127.0.0.1:3678/auth/code 2>/dev/null || true)"
-    if [ -n "$AUTH_JSON" ]; then
-        PAIR_CODE="$(echo "$AUTH_JSON" | grep -o '"code":"[^"]*"' | cut -d'"' -f4 || true)"
-        PAIR_URL="$(echo "$AUTH_JSON" | grep -o '"url":"[^"]*"' | cut -d'"' -f4 || true)"
-    fi
-fi
-
 # 5. Output Scannable Terminal QR Code
 DECKJAM_BIN="$HOME/.local/bin/deckjam"
 if [ ! -x "$DECKJAM_BIN" ] && [ -x "$REPO_ROOT/deckjam" ]; then
@@ -102,18 +114,20 @@ if [ -x "$DECKJAM_BIN" ]; then
     "$DECKJAM_BIN" --qr "$JOIN_URL" || true
 fi
 
-# 6. Clear summary
+# 6. Clear ground-truth summary
 echo "=========================================================="
 echo "Scan QR with your phone camera! Join URL: $JOIN_URL"
 if [ -n "$HOST_PIN" ]; then
     echo "Host PIN (for phone controls): $HOST_PIN"
 fi
-if [ -n "$BT_SINK" ]; then
-    echo "Speaker Output: Bluetooth ($BT_SINK)"
+if [ -n "$AUDIO_VERIFIED_MSG" ]; then
+    echo "Speaker Output: $AUDIO_VERIFIED_MSG"
 fi
-if [ -n "$PAIR_CODE" ]; then
+if [ "$SPOTIFY_READY" -eq 1 ]; then
+    echo "Spotify Engine: CONNECTED & PLAYBACK READY"
+elif [ -n "$PAIR_CODE" ]; then
     echo "Spotify Pair URL: ${PAIR_URL:-https://spotify.com/pair?code=$PAIR_CODE} (Pair Code: $PAIR_CODE)"
 else
-    echo "Deck UI: http://127.0.0.1:8080/deck (Launch with: deckjam-ui)"
+    echo "Spotify Engine: Starting / connecting to Spotify AP..."
 fi
 echo "=========================================================="

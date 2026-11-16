@@ -6,6 +6,12 @@ type PlayerStatus struct {
 	ConfiguredBackend  string `json:"configured_backend"`
 	Playing            bool   `json:"playing"`
 	Paused             bool   `json:"paused"`
+	Buffering          bool   `json:"buffering"`
+	AudioVerified      bool   `json:"audio_verified"`
+	AudioPlayer        string `json:"audio_player"`
+	AudioSinkName      string `json:"audio_sink_name"`
+	AudioBytesPerSec   int    `json:"audio_bytes_per_sec"`
+	AudioPeakPct       int    `json:"audio_peak_pct"`
 	PositionMS         int    `json:"position_ms"`
 	DurationMS         int    `json:"duration_ms"`
 	Volume             int    `json:"volume"`
@@ -13,6 +19,7 @@ type PlayerStatus struct {
 	SkipVoteThreshold  int    `json:"skip_vote_threshold"`
 	SkipVotedByMe      bool   `json:"skip_voted_by_me"`
 	LibrespotConnected bool   `json:"librespot_connected"`
+	LibrespotDaemonUp  bool   `json:"librespot_daemon_up"`
 	LibrespotPairCode  string `json:"librespot_pair_code"`
 	LibrespotPairURL   string `json:"librespot_pair_url"`
 	MPRISAvailable     bool   `json:"mpris_available"`
