@@ -95,6 +95,10 @@ func main() {
 	}
 	defer st.Close()
 
+	if removed, dErr := st.DeduplicateActiveQueue(); dErr == nil && removed > 0 {
+		log.Printf("Cleaned %d duplicate active queue entries from previous session", removed)
+	}
+
 	// Update backend setting if specified in flag
 	if *backendFlag != "" {
 		currentSettings, _ := st.GetSettings()

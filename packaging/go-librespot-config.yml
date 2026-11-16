@@ -42,8 +42,8 @@ server:
   address: "127.0.0.1"
   port: 3678
 
-# Bitrate, volume, and normalization settings (strictly conforming to config_schema.json)
-bitrate: 320
+# Bitrate, volume, and normalization settings (160kbps buffers 2x faster on shaky event phone hotspots)
+bitrate: 160
 volume_steps: 100
 initial_volume: 90
 ignore_last_volume: true

@@ -18,6 +18,8 @@ type Coordinator struct {
 	mock        *MockBackend
 	waiting     *WaitingBackend
 	audioBridge *AudioBridge
+	netProbe    *NetProbe
+	hostProbes  bool
 
 	modeMu     sync.RWMutex
 	activeMode string // "auto", "librespot", "mpris", "mock"
@@ -27,6 +29,8 @@ type Coordinator struct {
 	lastPlayAttempt time.Time
 	retryTrackID    int64
 	retryCount      int
+	lastJournalAt   time.Time
+	lastJournalHint string
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -47,11 +51,18 @@ func NewCoordinatorWithAudio(st *store.Store, librespotURL string, configuredBac
 		configuredBackend = "auto"
 	}
 
+	enableHostProbes := audioFIFOPath != "" && audioCmd == "" && configuredBackend != "mock"
+
 	c := &Coordinator{
 		store:      st,
 		activeMode: configuredBackend,
 		waiting:    NewWaitingBackend(),
+		hostProbes: enableHostProbes,
 		stopCh:     make(chan struct{}),
+	}
+
+	if enableHostProbes {
+		c.netProbe = NewNetProbe(nil)
 	}
 
 	onTrackEnded := func() {
@@ -104,6 +115,26 @@ func (c *Coordinator) getLastPlayAttempt() time.Time {
 	return c.lastPlayAttempt
 }
 
+func (c *Coordinator) refreshJournalHint() string {
+	if !c.hostProbes {
+		return ""
+	}
+	c.stateMu.RLock()
+	recent := time.Since(c.lastJournalAt) < 5*time.Second
+	cached := c.lastJournalHint
+	c.stateMu.RUnlock()
+	if recent {
+		return cached
+	}
+
+	hint := ReadLibrespotJournalHint()
+	c.stateMu.Lock()
+	c.lastJournalAt = time.Now()
+	c.lastJournalHint = hint
+	c.stateMu.Unlock()
+	return hint
+}
+
 func (c *Coordinator) watchdogLoop() {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -141,18 +172,34 @@ func (c *Coordinator) watchdogLoop() {
 
 			if np.SpotifyURI != "" {
 				var needsPlay bool
-				cooldown := 3500 * time.Millisecond
+				cooldown := 8 * time.Second
 
 				if status.ActiveBackend == "librespot" {
+					lsStatus := c.librespot.GetStatus()
+					if lsStatus.Paused && c.librespot.HasLoadedTrack(np.SpotifyURI) {
+						// Daemon loaded track in paused state while party is unpaused — resume without resetting CDN buffer!
+						_ = c.librespot.Resume()
+						c.notifyStateChanged()
+						continue
+					}
+
 					transportPlaying := c.librespot.IsTransportPlaying() && c.librespot.HasLoadedTrack(np.SpotifyURI)
 					if !transportPlaying {
 						needsPlay = true
+						cooldown = 3500 * time.Millisecond
 					} else if c.audioBridge.Enabled() && !c.audioBridge.Stats().StreamActive {
-						// Transport claims playing, but zero PCM bytes are reaching PipeWire — allow 8s CDN buffer grace
-						cooldown = 8 * time.Second
+						// Transport is fetching encrypted audio over hotspot cellular — allow 18s uninterrupted CDN buffer window!
+						cooldown = 18 * time.Second
 						needsPlay = true
+					} else {
+						// Real PCM is actively streaming! Reset retry counter.
+						c.stateMu.Lock()
+						c.retryCount = 0
+						c.lastJournalHint = ""
+						c.stateMu.Unlock()
 					}
 				} else {
+					cooldown = 3500 * time.Millisecond
 					needsPlay = !status.Playing && !status.Paused
 				}
 
@@ -164,6 +211,11 @@ func (c *Coordinator) watchdogLoop() {
 					continue
 				}
 
+				if c.hostProbes && c.netProbe != nil {
+					c.netProbe.CheckNow()
+				}
+				_ = c.refreshJournalHint()
+
 				c.stateMu.Lock()
 				if c.retryTrackID != np.ID {
 					c.retryTrackID = np.ID
@@ -174,19 +226,25 @@ func (c *Coordinator) watchdogLoop() {
 				count := c.retryCount
 				c.stateMu.Unlock()
 
-				if count > 4 {
+				if count > 3 {
 					settings, _ := c.store.GetSettings()
 					queued, _ := c.store.GetQueuedItems(settings.QueueMode, "")
 					if len(queued) > 0 {
-						log.Printf("[player] Track %s failed after %d attempts; advancing to next queued track", np.SpotifyURI, count-1)
+						log.Printf("[player] Track %s failed after %d attempts; advancing past stuck track", np.SpotifyURI, count-1)
 						_ = c.store.SetItemStatus(np.ID, "skipped")
+						// Also skip any immediate duplicate copies of the exact same stuck URI so queue doesn't loop forever
+						for _, dup := range queued {
+							if dup.SpotifyURI == np.SpotifyURI && dup.SpotifyURI != "" {
+								_ = c.store.SetItemStatus(dup.ID, "skipped")
+							}
+						}
 						c.stateMu.Lock()
 						c.retryCount = 0
 						c.stateMu.Unlock()
 						c.HandleTrackEnded()
 						continue
 					}
-					if count > 6 && time.Since(c.getLastPlayAttempt()) < 12*time.Second {
+					if count > 5 && time.Since(c.getLastPlayAttempt()) < 15*time.Second {
 						continue
 					}
 				}
@@ -383,8 +441,24 @@ func (c *Coordinator) GetStatus(guestID string) PlayerStatus {
 		}
 	}
 
+	if c.netProbe != nil {
+		ns := c.netProbe.Status()
+		st.InternetChecked = ns.Checked
+		st.InternetOK = ns.Online
+		st.InternetLatencyMS = ns.LatencyMS
+		st.InternetDetail = ns.Detail
+		if ns.Checked && !ns.Online && st.LastError == "" {
+			st.LastError = ns.Detail
+		}
+	}
+
 	if st.LastError == "" && c.librespot.LastError() != "" {
 		st.LastError = c.librespot.LastError()
+	}
+	if st.LastError == "" && st.Buffering && time.Since(c.getLastPlayAttempt()) > 5*time.Second {
+		if hint := c.refreshJournalHint(); hint != "" {
+			st.LastError = hint
+		}
 	}
 	if st.ActiveBackend == "waiting" && st.LastError == "" {
 		if st.LibrespotPairCode != "" {
@@ -574,10 +648,13 @@ func (c *Coordinator) notifyStateChanged() {
 	}
 }
 
-// Close closes all backends and the audio bridge idempotently.
+// Close closes all backends, network probes, and the audio bridge idempotently.
 func (c *Coordinator) Close() {
 	c.stopOnce.Do(func() {
 		close(c.stopCh)
+		if c.netProbe != nil {
+			c.netProbe.Close()
+		}
 		if c.librespot != nil {
 			_ = c.librespot.Close()
 		}

@@ -187,13 +187,21 @@
     if (!player) return;
     const sink = player.audio_sink_name || 'Steam Deck Out';
     const isPlaying = !!(player.playing && !player.paused);
+    const noInternet = !!(player.internet_checked && !player.internet_ok);
+
     if (isPlaying && player.audio_verified) {
       el.backendDot.style.background = 'var(--deck-emerald)';
       const sig = player.audio_peak_pct > 0 ? ` (${player.audio_peak_pct}%)` : '';
       el.backendName.textContent = `🔊 ${sink}${sig}`;
+    } else if (player.buffering && noInternet) {
+      el.backendDot.style.background = 'var(--deck-amber)';
+      el.backendName.textContent = '❌ Hotspot Has No Phone Internet!';
     } else if (player.buffering) {
       el.backendDot.style.background = 'var(--deck-amber)';
-      el.backendName.textContent = `Buffering → ${sink}`;
+      el.backendName.textContent = player.last_error ? `Buffering (${player.last_error})` : `Buffering → ${sink}`;
+    } else if (noInternet) {
+      el.backendDot.style.background = 'var(--deck-amber)';
+      el.backendName.textContent = '⚠️ Hotspot Only • Check Mobile Data';
     } else if (player.active_backend === 'waiting') {
       el.backendDot.style.background = 'var(--deck-amber)';
       el.backendName.textContent = player.librespot_pair_code ? 'Pair Spotify Above' : 'Connecting Spotify...';
@@ -230,6 +238,10 @@
       if (prog.audio_sink_name) state.player.audio_sink_name = prog.audio_sink_name;
       if (typeof prog.audio_peak_pct === 'number') state.player.audio_peak_pct = prog.audio_peak_pct;
       if (typeof prog.last_error === 'string') state.player.last_error = prog.last_error;
+      if (typeof prog.internet_checked === 'boolean') state.player.internet_checked = prog.internet_checked;
+      if (typeof prog.internet_ok === 'boolean') state.player.internet_ok = prog.internet_ok;
+      if (typeof prog.internet_latency_ms === 'number') state.player.internet_latency_ms = prog.internet_latency_ms;
+      if (typeof prog.internet_detail === 'string') state.player.internet_detail = prog.internet_detail;
       renderStageBackendPill(state.player);
     }
 

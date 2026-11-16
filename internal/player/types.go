@@ -23,6 +23,10 @@ type PlayerStatus struct {
 	LibrespotPairCode  string `json:"librespot_pair_code"`
 	LibrespotPairURL   string `json:"librespot_pair_url"`
 	MPRISAvailable     bool   `json:"mpris_available"`
+	InternetChecked    bool   `json:"internet_checked"`
+	InternetOK         bool   `json:"internet_ok"`
+	InternetLatencyMS  int    `json:"internet_latency_ms"`
+	InternetDetail     string `json:"internet_detail"`
 	LastError          string `json:"last_error"`
 }
 

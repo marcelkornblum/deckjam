@@ -251,3 +251,88 @@ Sink #89
 		t.Errorf("Expected volumePct=5, got %d", bt.volumePct)
 	}
 }
+
+// 5. Verify slow-hotspot 204 responses right after Play() do NOT prematurely wipe Playing=false during 6s loadingGrace.
+func TestLibrespotLoadingGracePreventsPrematureStopOnSlowHotspot(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"playback_ready":true}`))
+	})
+	mux.HandleFunc("/auth/code", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		// Simulate go-librespot still resolving track over slow cellular (204 No Content)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/player/play", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	server := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer ln.Close()
+	go func() { _ = server.Serve(ln) }()
+	defer func() { _ = server.Close() }()
+
+	lb := NewLibrespotBackend("http://"+ln.Addr().String(), nil)
+	defer lb.Close()
+
+	lb.checkStatus()
+	if err := lb.Play("spotify:track:slowHotspotSong"); err != nil {
+		t.Fatalf("lb.Play failed: %v", err)
+	}
+
+	// Immediately poll /status (returns 204 while resolving over slow 4G/5G): must remain Playing=true inside loadingGrace!
+	lb.checkStatus()
+	if !lb.IsTransportPlaying() {
+		t.Fatalf("CRITICAL: checkStatus() wiped Playing=false on 204 during slow hotspot track load!")
+	}
+	if !lb.HasLoadedTrack("spotify:track:slowHotspotSong") {
+		t.Errorf("Expected slowHotspotSong preserved during loadingGrace")
+	}
+}
+
+// 6. Verify go-librespot journal log parser and NetProbe connectivity diagnostics.
+func TestParseLibrespotLogHintAndNetProbe(t *testing.T) {
+	if got := ParseLibrespotLogHint(`panic: unsupported context type`); !strings.Contains(got, "single-track play") {
+		t.Errorf("Expected single-track panic hint, got %q", got)
+	}
+	if got := ParseLibrespotLogHint(`time="2026-11-15" level=error msg="failed to open fifo: no such device or address"`); !strings.Contains(got, "FIFO") {
+		t.Errorf("Expected FIFO hint, got %q", got)
+	}
+	if got := ParseLibrespotLogHint(`time="2026-11-15" level=warning msg="reconnecting" error="dial tcp: i/o timeout"`); !strings.Contains(got, "hotspot") {
+		t.Errorf("Expected hotspot timeout hint, got %q", got)
+	}
+
+	// Test NetProbe Online=true with local HTTP server
+	okSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})}
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer ln.Close()
+	go func() { _ = okSrv.Serve(ln) }()
+	defer func() { _ = okSrv.Close() }()
+
+	probeOK := NewNetProbe([]string{"http://" + ln.Addr().String()})
+	defer probeOK.Close()
+	stOK := probeOK.CheckNow()
+	if !stOK.Checked || !stOK.Online {
+		t.Fatalf("Expected NetProbe Online=true for reachable endpoint, got %+v", stOK)
+	}
+
+	// Test NetProbe Online=false for closed port
+	probeOff := NewNetProbe([]string{"http://127.0.0.1:1"})
+	defer probeOff.Close()
+	stOff := probeOff.CheckNow()
+	if !stOff.Checked || stOff.Online {
+		t.Fatalf("Expected NetProbe Online=false for unreachable endpoint, got %+v", stOff)
+	}
+}

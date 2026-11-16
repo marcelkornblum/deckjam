@@ -569,3 +569,94 @@ func (s *Store) GetResolvingItems() ([]QueueItem, error) {
 	}
 	return items, nil
 }
+
+// FindActiveDuplicate checks if an identical track/link is already actively playing, queued, or resolving,
+// making Share Sheet, iOS Shortcut, and offline outbox retries 100% idempotent.
+// Once a track finishes or is skipped ('played'/'skipped'), it can be re-queued again freely.
+func (s *Store) FindActiveDuplicate(addedByID, trackID, spotifyURI, rawInput string) (*QueueItem, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT id, spotify_uri, track_id, raw_input, title, artist, album,
+		       thumbnail_url, duration_ms, added_by_id, added_by_name, added_by_color,
+		       status, round_number, votes, created_at
+		FROM queue_items
+		WHERE status IN ('playing', 'queued', 'resolving')
+		ORDER BY CASE WHEN status = 'playing' THEN 0 ELSE 1 END, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var it QueueItem
+		if err := rows.Scan(
+			&it.ID, &it.SpotifyURI, &it.TrackID, &it.RawInput, &it.Title, &it.Artist, &it.Album,
+			&it.ThumbnailURL, &it.DurationMS, &it.AddedByID, &it.AddedByName, &it.AddedByColor,
+			&it.Status, &it.RoundNumber, &it.Votes, &it.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+
+		sameTrack := (trackID != "" && it.TrackID == trackID) ||
+			(spotifyURI != "" && it.SpotifyURI == spotifyURI) ||
+			(rawInput != "" && it.RawInput == rawInput)
+		if sameTrack {
+			return &it, nil
+		}
+	}
+	return nil, nil
+}
+
+// DeduplicateActiveQueue removes duplicate active ('queued' / 'resolving') copies of tracks that are already
+// playing or earlier in the queue, returning the number of duplicate rows removed.
+func (s *Store) DeduplicateActiveQueue() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.Query(`
+		SELECT id, spotify_uri, track_id, raw_input, status
+		FROM queue_items
+		WHERE status IN ('playing', 'queued', 'resolving')
+		ORDER BY CASE WHEN status = 'playing' THEN 0 ELSE 1 END, id ASC
+	`)
+	if err != nil {
+		return 0, err
+	}
+
+	seen := make(map[string]bool)
+	var dupIDs []int64
+	for rows.Next() {
+		var id int64
+		var uri, tid, raw, status string
+		if err := rows.Scan(&id, &uri, &tid, &raw, &status); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		key := ""
+		if tid != "" {
+			key = "tid:" + tid
+		} else if uri != "" {
+			key = "uri:" + uri
+		} else if raw != "" {
+			key = "raw:" + raw
+		}
+		if key == "" {
+			continue
+		}
+		if seen[key] && status != "playing" {
+			dupIDs = append(dupIDs, id)
+		} else {
+			seen[key] = true
+		}
+	}
+	rows.Close()
+
+	for _, id := range dupIDs {
+		_, _ = s.db.Exec(`DELETE FROM queue_items WHERE id = ?`, id)
+	}
+	return len(dupIDs), nil
+}
+

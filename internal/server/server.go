@@ -269,6 +269,10 @@ func (s *Server) progressLoop() {
 			AudioVerified:     status.AudioVerified,
 			AudioSinkName:     status.AudioSinkName,
 			AudioPeakPct:      status.AudioPeakPct,
+			InternetChecked:   status.InternetChecked,
+			InternetOK:        status.InternetOK,
+			InternetLatencyMS: status.InternetLatencyMS,
+			InternetDetail:    status.InternetDetail,
 			LastError:         status.LastError,
 			PositionMS:        status.PositionMS,
 			DurationMS:        status.DurationMS,
@@ -447,7 +451,9 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger autoplay if nothing is playing
 	s.coordinator.CheckAutoPlay()
-	s.BroadcastState()
+	if count > 0 {
+		s.BroadcastState()
+	}
 
 	resp := map[string]interface{}{
 		"ok":          true,
@@ -465,27 +471,13 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		_ = r.ParseForm()
-		input = r.FormValue("url")
-		if input == "" {
-			input = r.FormValue("text")
-		} else if r.FormValue("text") != "" {
-			input = input + " " + r.FormValue("text")
-		}
-		if title := r.FormValue("title"); title != "" {
-			input = input + " " + title
-		}
+		u, txt, ttl := r.FormValue("url"), r.FormValue("text"), r.FormValue("title")
+		input = strings.Join([]string{u, txt, ttl}, " ")
 		guestID = r.FormValue("guest")
 		guestName = r.FormValue("guest_name")
 	} else {
-		input = r.URL.Query().Get("url")
-		if input == "" {
-			input = r.URL.Query().Get("text")
-		} else if r.URL.Query().Get("text") != "" {
-			input = input + " " + r.URL.Query().Get("text")
-		}
-		if title := r.URL.Query().Get("title"); title != "" {
-			input = input + " " + title
-		}
+		u, txt, ttl := r.URL.Query().Get("url"), r.URL.Query().Get("text"), r.URL.Query().Get("title")
+		input = strings.Join([]string{u, txt, ttl}, " ")
 		guestID = r.URL.Query().Get("guest")
 		guestName = r.URL.Query().Get("guest_name")
 	}
@@ -501,7 +493,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	settings, _ := s.store.GetSettings()
-	_, _, msg, err := spotify.EnqueueWithResilience(
+	count, _, msg, err := spotify.EnqueueWithResilience(
 		r.Context(),
 		s.resolver,
 		s.store,
@@ -512,7 +504,9 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 	)
 
 	s.coordinator.CheckAutoPlay()
-	s.BroadcastState()
+	if count > 0 {
+		s.BroadcastState()
+	}
 
 	redirectURL := fmt.Sprintf("/?shared=1&msg=%s", url.QueryEscape(msg))
 	if err != nil {
@@ -588,7 +582,9 @@ func (s *Server) handleQuickShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.coordinator.CheckAutoPlay()
-	s.BroadcastState()
+	if count > 0 {
+		s.BroadcastState()
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -798,6 +794,8 @@ func (s *Server) handleHostControl(w http.ResponseWriter, r *http.Request) {
 		}
 	case "clear_queue":
 		_ = s.store.ClearQueue()
+	case "dedupe_queue":
+		_, _ = s.store.DeduplicateActiveQueue()
 	case "clear_fallback":
 		_ = s.store.ClearFallbackTracks()
 	case "update_settings":

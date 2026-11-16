@@ -34,6 +34,10 @@ type ProgressPayload struct {
 	AudioVerified     bool   `json:"audio_verified"`
 	AudioSinkName     string `json:"audio_sink_name"`
 	AudioPeakPct      int    `json:"audio_peak_pct"`
+	InternetChecked   bool   `json:"internet_checked"`
+	InternetOK        bool   `json:"internet_ok"`
+	InternetLatencyMS int    `json:"internet_latency_ms"`
+	InternetDetail    string `json:"internet_detail"`
 	LastError         string `json:"last_error"`
 	PositionMS        int    `json:"position_ms"`
 	DurationMS        int    `json:"duration_ms"`

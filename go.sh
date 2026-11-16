@@ -103,7 +103,20 @@ if [ -z "$JOIN_URL" ]; then
     JOIN_URL="http://${LAN_IP}:8080"
 fi
 
-# 5. Output Scannable Terminal QR Code
+# 5. Live Hotspot Internet Probe to Spotify
+echo "[*] Checking Hotspot Internet connectivity to Spotify..."
+HOTSPOT_NET_MSG="CHECKING..."
+SPOT_PROBE="$(curl -4 -s -o /dev/null -w "%{http_code} %{time_total}" -m 4 "https://apresolve.spotify.com/" 2>/dev/null || true)"
+SPOT_CODE="$(echo "$SPOT_PROBE" | awk '{print $1}')"
+SPOT_TIME="$(echo "$SPOT_PROBE" | awk '{print $2}')"
+if [ -n "$SPOT_CODE" ] && [ "$SPOT_CODE" != "000" ]; then
+    SPOT_MS="$(awk -v t="${SPOT_TIME:-0}" 'BEGIN { printf "%d", t * 1000 }' 2>/dev/null || echo "0")"
+    HOTSPOT_NET_MSG="ONLINE (${SPOT_MS}ms to Spotify via Hotspot)"
+else
+    HOTSPOT_NET_MSG="OFFLINE! (Deck is on Hotspot Wi-Fi, but Phone is NOT sharing Mobile Data / no signal!)"
+fi
+
+# 6. Output Scannable Terminal QR Code
 DECKJAM_BIN="$HOME/.local/bin/deckjam"
 if [ ! -x "$DECKJAM_BIN" ] && [ -x "$REPO_ROOT/deckjam" ]; then
     DECKJAM_BIN="$REPO_ROOT/deckjam"
@@ -114,12 +127,13 @@ if [ -x "$DECKJAM_BIN" ]; then
     "$DECKJAM_BIN" --qr "$JOIN_URL" || true
 fi
 
-# 6. Clear ground-truth summary
+# 7. Clear ground-truth summary
 echo "=========================================================="
 echo "Scan QR with your phone camera! Join URL: $JOIN_URL"
 if [ -n "$HOST_PIN" ]; then
     echo "Host PIN (for phone controls): $HOST_PIN"
 fi
+echo "Hotspot Internet: $HOTSPOT_NET_MSG"
 if [ -n "$AUDIO_VERIFIED_MSG" ]; then
     echo "Speaker Output: $AUDIO_VERIFIED_MSG"
 fi

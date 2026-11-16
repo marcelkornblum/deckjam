@@ -83,27 +83,38 @@ else
     fi
 fi
 
-# 4. Download or Verify go-librespot
+# 4. Download or Refresh go-librespot (refresh on --force if internet is up so bare-track-URI fix is present)
 echo "[+] Step 3: Checking go-librespot..."
 LIBRESPOT_BIN="$BIN_DIR/go-librespot"
-if [ -x "$LIBRESPOT_BIN" ]; then
-    echo "    go-librespot is already installed at $LIBRESPOT_BIN."
+NEED_LIBRESPOT_DL=0
+if [ ! -x "$LIBRESPOT_BIN" ]; then
+    NEED_LIBRESPOT_DL=1
+elif [ "$FORCE" -eq 1 ] && command -v curl >/dev/null 2>&1; then
+    if curl -4 -fsI -m 5 "https://github.com" >/dev/null 2>&1; then
+        NEED_LIBRESPOT_DL=1
+    else
+        echo "    go-librespot already installed (offline hotspot — keeping existing binary)."
+    fi
 else
-    echo "    Downloading go-librespot..."
+    echo "    go-librespot is already installed at $LIBRESPOT_BIN."
+fi
+
+if [ "$NEED_LIBRESPOT_DL" -eq 1 ]; then
+    echo "    Ensuring latest go-librespot binary..."
     TMP_DIR="$(mktemp -d /tmp/deckjam-install.XXXXXX)"
     DOWNLOAD_SUCCESS=0
 
     if command -v curl >/dev/null 2>&1; then
         TARBALL_URL="https://github.com/devgianlu/go-librespot/releases/latest/download/go-librespot_linux_x86_64.tar.gz"
         echo "    Downloading from: $TARBALL_URL ..."
-        if curl -fSL -m 45 "$TARBALL_URL" -o "$TMP_DIR/go-librespot.tar.gz" 2>/dev/null; then
+        if curl -4 -fSL -m 35 "$TARBALL_URL" -o "$TMP_DIR/go-librespot.tar.gz" 2>/dev/null || curl -fSL -m 35 "$TARBALL_URL" -o "$TMP_DIR/go-librespot.tar.gz" 2>/dev/null; then
             tar -xzf "$TMP_DIR/go-librespot.tar.gz" -C "$TMP_DIR"
             if [ -f "$TMP_DIR/go-librespot" ]; then
                 cp -f "$TMP_DIR/go-librespot" "$LIBRESPOT_BIN.tmp"
                 chmod +x "$LIBRESPOT_BIN.tmp"
                 mv -f "$LIBRESPOT_BIN.tmp" "$LIBRESPOT_BIN"
                 DOWNLOAD_SUCCESS=1
-                echo "    go-librespot installed successfully to $LIBRESPOT_BIN."
+                echo "    go-librespot updated successfully at $LIBRESPOT_BIN."
             fi
         fi
     fi
@@ -121,7 +132,11 @@ fi
 
 # 5. Create Audio FIFO & Deploy go-librespot config
 echo "[+] Step 4: Configuring PipeWire Audio FIFO & go-librespot..."
-AUDIO_FIFO="${XDG_RUNTIME_DIR:-/tmp}/deckjam-audio.fifo"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ ! -d "$RUNTIME_DIR" ]; then
+    RUNTIME_DIR="/tmp"
+fi
+AUDIO_FIFO="${RUNTIME_DIR}/deckjam-audio.fifo"
 if [ ! -p "$AUDIO_FIFO" ]; then
     rm -f "$AUDIO_FIFO" 2>/dev/null || true
     mkfifo -m 0600 "$AUDIO_FIFO"

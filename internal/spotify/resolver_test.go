@@ -177,3 +177,76 @@ func TestResolverScrapeAndOfflineFallback(t *testing.T) {
 		t.Fatalf("Expected 2 resolving items, got %d", len(resolving))
 	}
 }
+
+func TestDuplicateShareBurstAndDeduplicateActiveQueue(t *testing.T) {
+	tmpDir := t.TempDir()
+	st, err := store.Open(filepath.Join(tmpDir, "deckjam.db"))
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer st.Close()
+
+	offlineResolver := NewResolver(st)
+	offlineResolver.client.Timeout = 25 * time.Millisecond
+
+	// 1. Simulate 12 rapid share / outbox-flush calls for the same Spotify track (including ?si= variants and empty guest ID)
+	totalAdded := 0
+	for i := 0; i < 12; i++ {
+		g := store.Guest{GuestID: "guest-phone", Name: "Marcel", Color: "#1ed760"}
+		if i%3 == 0 {
+			g.GuestID = "" // simulate PWA GET /share without guest param
+		}
+		urlInput := "https://open.spotify.com/track/7GhIk7Il098yCjg4BQjzvb?si=burst" + string(rune('A'+i))
+		cnt, _, _, qErr := EnqueueWithResilience(context.Background(), offlineResolver, st, urlInput, g, "queue", "round_robin")
+		if qErr != nil {
+			t.Fatalf("EnqueueWithResilience call %d failed: %v", i, qErr)
+		}
+		totalAdded += cnt
+	}
+
+	if totalAdded != 1 {
+		t.Fatalf("Expected exactly 1 track added across 12 duplicate share calls, got %d", totalAdded)
+	}
+	queued, err := st.GetQueuedItems("round_robin", "")
+	if err != nil || len(queued) != 1 {
+		t.Fatalf("Expected 1 item in queue, got %d (err=%v)", len(queued), err)
+	}
+
+	// 2. Simulate pre-existing database with 10 duplicate rows (1 playing + 9 queued) cleaned on startup
+	playingItem, err := st.PopNextTrack("round_robin")
+	if err != nil || playingItem == nil {
+		t.Fatalf("PopNextTrack failed: %v", err)
+	}
+	for i := 0; i < 9; i++ {
+		dup := store.QueueItem{
+			SpotifyURI:  "spotify:track:7GhIk7Il098yCjg4BQjzvb",
+			TrackID:     "7GhIk7Il098yCjg4BQjzvb",
+			Title:       "Duplicate Song",
+			Artist:      "Rick",
+			DurationMS:  210000,
+			AddedByID:   "guest-phone",
+			AddedByName: "Marcel",
+			Status:      "queued",
+		}
+		if err := st.AddToQueue(&dup, "round_robin"); err != nil {
+			t.Fatalf("AddToQueue failed: %v", err)
+		}
+	}
+
+	removed, err := st.DeduplicateActiveQueue()
+	if err != nil {
+		t.Fatalf("DeduplicateActiveQueue failed: %v", err)
+	}
+	if removed != 9 {
+		t.Fatalf("Expected 9 duplicate queued copies removed, got %d", removed)
+	}
+
+	remQueue, _ := st.GetQueuedItems("round_robin", "")
+	if len(remQueue) != 0 {
+		t.Fatalf("Expected 0 duplicate queued items remaining while song is already playing, got %d", len(remQueue))
+	}
+	np, _ := st.GetNowPlaying("")
+	if np == nil || np.TrackID != "7GhIk7Il098yCjg4BQjzvb" {
+		t.Fatalf("Expected playing track to remain intact after deduplication, got %+v", np)
+	}
+}

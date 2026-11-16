@@ -243,16 +243,22 @@
     renderOutboxBanner();
   }
 
+  let isFlushingOutbox = false;
+  let isSubmittingQueue = false;
+
   function addToOutbox(input, target = 'queue') {
     const outbox = getOutbox();
-    outbox.push({
-      input,
-      target,
-      guest_id: guest.id,
-      guest_name: guest.name,
-      timestamp: Date.now()
-    });
-    saveOutbox(outbox);
+    const exists = outbox.some((item) => item && item.input === input);
+    if (!exists) {
+      outbox.push({
+        input,
+        target,
+        guest_id: guest.id,
+        guest_name: guest.name,
+        timestamp: Date.now()
+      });
+      saveOutbox(outbox);
+    }
     showToast('Saved offline. Will queue automatically when Wi-Fi connects.', 'amber');
   }
 
@@ -267,53 +273,94 @@
   }
 
   async function flushOutbox() {
+    if (isFlushingOutbox) return;
     const outbox = getOutbox();
     if (outbox.length === 0) return;
 
-    const remaining = [];
-    let flushedCount = 0;
+    isFlushingOutbox = true;
+    try {
+      // Clear upfront so concurrent tab events cannot re-read and re-post the same items
+      saveOutbox([]);
+      const remaining = [];
+      let flushedCount = 0;
 
-    for (const item of outbox) {
-      try {
-        const res = await fetch('/api/queue', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            input: item.input,
-            guest_id: item.guest_id || guest.id,
-            guest_name: item.guest_name || guest.name,
-            target: item.target || 'queue'
-          })
-        });
-        if (res.ok) {
-          flushedCount++;
-        } else {
+      for (const item of outbox) {
+        try {
+          const res = await fetch('/api/queue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              input: item.input,
+              guest_id: item.guest_id || guest.id,
+              guest_name: item.guest_name || guest.name,
+              target: item.target || 'queue'
+            })
+          });
+          if (res.ok) {
+            flushedCount++;
+          } else if (res.status >= 500) {
+            remaining.push(item);
+          }
+          // Note: 4xx invalid links are intentionally dropped so they don't loop forever
+        } catch {
           remaining.push(item);
         }
-      } catch {
-        remaining.push(item);
       }
-    }
 
-    saveOutbox(remaining);
-    if (flushedCount > 0) {
-      showToast(`Auto-queued ${flushedCount} offline song${flushedCount > 1 ? 's' : ''}!`, 'success');
-      fetchState();
+      if (remaining.length > 0) {
+        const latest = getOutbox();
+        const merged = [...remaining];
+        for (const extra of latest) {
+          if (!merged.some((m) => m.input === extra.input)) {
+            merged.push(extra);
+          }
+        }
+        saveOutbox(merged);
+      }
+
+      if (flushedCount > 0) {
+        showToast(`Auto-queued ${flushedCount} offline song${flushedCount > 1 ? 's' : ''}!`, 'success');
+        fetchState();
+      }
+    } finally {
+      isFlushingOutbox = false;
     }
   }
 
   // --- Network & SSE Connection ---
-  function updateConnectionUI(online) {
-    isOffline = !online;
-    if (online) {
-      el.connStatus.classList.remove('offline');
-      el.connLabel.textContent = 'Live on LAN';
-      renderOutboxBanner();
-      flushOutbox();
-    } else {
+  function renderConnectionLabel() {
+    if (!el.connLabel) return;
+    if (isOffline) {
       el.connStatus.classList.add('offline');
       el.connLabel.textContent = 'Reconnecting — Offline Outbox Active';
-      renderOutboxBanner();
+      if (el.connLed) el.connLed.style.background = '';
+      return;
+    }
+
+    el.connStatus.classList.remove('offline');
+    const p = state.player || {};
+    if (p.internet_checked) {
+      if (p.internet_ok) {
+        const ms = p.internet_latency_ms > 0 ? ` (${p.internet_latency_ms}ms)` : '';
+        el.connLabel.textContent = `Hotspot + Internet OK${ms}`;
+        if (el.connLed) el.connLed.style.background = 'var(--accent-emerald)';
+      } else {
+        el.connLabel.textContent = 'Hotspot Only • No Phone Internet!';
+        if (el.connLed) el.connLed.style.background = 'var(--accent-amber)';
+      }
+    } else {
+      el.connLabel.textContent = 'Live on Hotspot';
+      if (el.connLed) el.connLed.style.background = '';
+    }
+  }
+
+  function updateConnectionUI(online) {
+    const wasOffline = isOffline;
+    isOffline = !online;
+    renderConnectionLabel();
+    renderOutboxBanner();
+    if (online && wasOffline) {
+      flushOutbox();
     }
   }
 
@@ -322,7 +369,6 @@
       sseSource.close();
     }
 
-    const hostPin = localStorage.getItem(STORAGE_KEYS.HOST_PIN) || '';
     const sseUrl = `/api/events?guest_id=${encodeURIComponent(guest.id)}`;
     sseSource = new EventSource(sseUrl);
 
@@ -432,6 +478,7 @@
   }
 
   function renderAudioOutStatus(player) {
+    renderConnectionLabel();
     if (!el.audioOutStatusText) return;
     if (!player) {
       el.audioOutStatusText.textContent = '🔈 Checking Steam Deck audio out...';
@@ -440,12 +487,23 @@
     }
     const sink = player.audio_sink_name || 'Steam Deck Audio Out';
     const isPlaying = !!(player.playing && !player.paused);
+    const noInternet = !!(player.internet_checked && !player.internet_ok);
+
     if (isPlaying && player.audio_verified) {
       const sig = player.audio_peak_pct > 0 ? ` • ${player.audio_peak_pct}% signal` : ' • PCM active';
       el.audioOutStatusText.textContent = `🔊 ${sink}${sig}`;
       el.audioOutStatusText.style.color = 'var(--accent-emerald)';
     } else if (player.buffering) {
-      el.audioOutStatusText.textContent = `⏳ Buffering audio stream → ${sink}...`;
+      if (noInternet) {
+        el.audioOutStatusText.textContent = `❌ Hotspot has NO internet — unlock phone & check Mobile Data! (${player.internet_detail || 'Offline'})`;
+      } else if (player.last_error) {
+        el.audioOutStatusText.textContent = `⏳ Buffering → ${sink} (${player.last_error})`;
+      } else {
+        el.audioOutStatusText.textContent = `⏳ Buffering Spotify stream → ${sink}...`;
+      }
+      el.audioOutStatusText.style.color = 'var(--accent-amber)';
+    } else if (noInternet) {
+      el.audioOutStatusText.textContent = `⚠️ Hotspot Wi-Fi OK, but NO internet to Spotify (${player.internet_detail || 'Check Mobile Data'})`;
       el.audioOutStatusText.style.color = 'var(--accent-amber)';
     } else if (player.last_error) {
       el.audioOutStatusText.textContent = `⚠️ ${player.last_error}`;
@@ -474,6 +532,10 @@
       if (prog.audio_sink_name) state.player.audio_sink_name = prog.audio_sink_name;
       if (typeof prog.audio_peak_pct === 'number') state.player.audio_peak_pct = prog.audio_peak_pct;
       if (typeof prog.last_error === 'string') state.player.last_error = prog.last_error;
+      if (typeof prog.internet_checked === 'boolean') state.player.internet_checked = prog.internet_checked;
+      if (typeof prog.internet_ok === 'boolean') state.player.internet_ok = prog.internet_ok;
+      if (typeof prog.internet_latency_ms === 'number') state.player.internet_latency_ms = prog.internet_latency_ms;
+      if (typeof prog.internet_detail === 'string') state.player.internet_detail = prog.internet_detail;
       renderAudioOutStatus(state.player);
     }
 
@@ -719,6 +781,7 @@
 
   // --- Submitting Songs / Albums / Playlists ---
   async function submitQueueInput(rawInput, explicitTarget = null) {
+    if (isSubmittingQueue) return;
     const trimmed = (rawInput || '').trim();
     if (!trimmed) {
       showToast('Please paste a Spotify track, album, or playlist link', 'amber');
@@ -735,6 +798,8 @@
       return;
     }
 
+    isSubmittingQueue = true;
+    if (el.btnSubmitQueue) el.btnSubmitQueue.disabled = true;
     try {
       const res = await fetch('/api/queue', {
         method: 'POST',
@@ -749,7 +814,8 @@
 
       if (res.ok) {
         const data = await res.json();
-        showToast(data.message || `Queued ${data.added_count || 1} song(s)!`, 'success');
+        const toastType = data.added_count === 0 ? 'info' : 'success';
+        showToast(data.message || `Queued ${data.added_count || 1} song(s)!`, toastType);
         el.spotifyInput.value = '';
         hidePlaylistModeBar();
         fetchState();
@@ -762,6 +828,9 @@
       addToOutbox(trimmed, finalTarget);
       el.spotifyInput.value = '';
       hidePlaylistModeBar();
+    } finally {
+      isSubmittingQueue = false;
+      if (el.btnSubmitQueue) el.btnSubmitQueue.disabled = false;
     }
   }
 

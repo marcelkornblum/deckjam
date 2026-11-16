@@ -189,16 +189,14 @@ func (b *LibrespotBackend) checkStatus() {
 		if volVal > 0 {
 			b.volume = volVal
 		}
-		if status204 {
-			b.playing = false
-			b.paused = false
-			b.hasLoadedTrack = false
-			b.currentURI = ""
-		} else if isStopped || !hasTrack {
-			b.playing = false
-			b.paused = false
-			b.hasLoadedTrack = false
-			b.currentURI = ""
+		loadingGrace := time.Since(b.lastPlayTime) < 6*time.Second && b.lastError == "" && b.currentURI != ""
+		if status204 || isStopped || !hasTrack {
+			if !loadingGrace {
+				b.playing = false
+				b.paused = false
+				b.hasLoadedTrack = false
+				b.currentURI = ""
+			}
 		} else {
 			b.hasLoadedTrack = true
 			b.paused = isPaused
@@ -278,15 +276,18 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 			b.lastError = ""
 			b.mu.Unlock()
 
-		case "playback_error":
+		case "playback_error", "playback_failed", "error":
 			var d struct {
 				Error   string `json:"error"`
+				Reason  string `json:"reason"`
 				Message string `json:"message"`
 			}
 			errText := "Spotify playback error"
 			if json.Unmarshal(ev.Data, &d) == nil {
 				if d.Error != "" {
 					errText = d.Error
+				} else if d.Reason != "" {
+					errText = d.Reason
 				} else if d.Message != "" {
 					errText = d.Message
 				}
