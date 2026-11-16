@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -334,5 +335,168 @@ func TestParseLibrespotLogHintAndNetProbe(t *testing.T) {
 	stOff := probeOff.CheckNow()
 	if !stOff.Checked || stOff.Online {
 		t.Fatalf("Expected NetProbe Online=false for unreachable endpoint, got %+v", stOff)
+	}
+}
+
+// 7. Verify StartIPv4Proxy handles HTTP and CONNECT requests over IPv4 (127.0.0.1).
+func TestIPv4ProxyTunnelsHTTPAndConnect(t *testing.T) {
+	// Start upstream test server
+	upstreamSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Test-Echo", r.Header.Get("X-Test-Send"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream-ok"))
+	})}
+	upstreamLn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen upstream failed: %v", err)
+	}
+	defer upstreamLn.Close()
+	go func() { _ = upstreamSrv.Serve(upstreamLn) }()
+	defer func() { _ = upstreamSrv.Close() }()
+
+	upstreamAddr := upstreamLn.Addr().String()
+
+	// Start IPv4 proxy on random port
+	proxyCloser, proxyAddr, err := StartIPv4Proxy("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("StartIPv4Proxy failed: %v", err)
+	}
+	defer proxyCloser.Close()
+
+	// Test 1: Plain HTTP proxy request
+	proxyURL := http.ProxyURL(&url.URL{Scheme: "http", Host: proxyAddr})
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: proxyURL,
+		},
+		Timeout: 3 * time.Second,
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+upstreamAddr+"/test", nil)
+	req.Header.Set("X-Test-Send", "deckjam-ipv4")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200 OK, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Test-Echo"); got != "deckjam-ipv4" {
+		t.Errorf("Expected echo 'deckjam-ipv4', got %q", got)
+	}
+
+	// Test 2: CONNECT tunnel simulation
+	conn, err := net.Dial("tcp4", proxyAddr)
+	if err != nil {
+		t.Fatalf("Dial proxy failed: %v", err)
+	}
+	defer conn.Close()
+
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", upstreamAddr, upstreamAddr)
+	buf := make([]byte, 512)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("Read CONNECT response failed: %v", err)
+	}
+	connectResp := string(buf[:n])
+	if !strings.Contains(connectResp, "200 Connection Established") {
+		t.Fatalf("Expected 200 Connection Established, got %q", connectResp)
+	}
+
+	// Send plain HTTP over hijacked tunnel to upstream
+	fmt.Fprintf(conn, "GET /tunnel HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", upstreamAddr)
+	n, err = conn.Read(buf)
+	if err != nil {
+		t.Fatalf("Read tunneled response failed: %v", err)
+	}
+	if !strings.Contains(string(buf[:n]), "upstream-ok") {
+		t.Errorf("Expected 'upstream-ok' over tunnel, got %q", string(buf[:n]))
+	}
+}
+
+// 8. Verify LibrespotBackend parses "type": "playing", "type": "metadata", and "type": "playback_error"
+func TestLibrespotWebSocketEventParsing(t *testing.T) {
+	backend := &LibrespotBackend{
+		currentURI: "spotify:track:initial",
+	}
+
+	// Simulate consumeEvents logic directly
+	msgPlaying := []byte(`{"type":"playing","data":{"uri":"spotify:track:song123","play_origin":"spotify_connect"}}`)
+	backend.consumeEventsMock(msgPlaying)
+
+	if !backend.playing || backend.currentURI != "spotify:track:song123" || backend.playOrigin != "spotify_connect" {
+		t.Errorf("Failed parsing 'playing' event: playing=%v uri=%s playOrigin=%s",
+			backend.playing, backend.currentURI, backend.playOrigin)
+	}
+
+	msgMeta := []byte(`{"type":"metadata","data":{"uri":"spotify:track:song123","name":"Track A","artist_names":["Artist 1","Artist 2"],"album_name":"Album X","duration":210000,"position":5000}}`)
+	backend.consumeEventsMock(msgMeta)
+
+	if backend.trackTitle != "Track A" || backend.trackArtist != "Artist 1, Artist 2" || backend.trackAlbum != "Album X" || backend.durationMS != 210000 {
+		t.Errorf("Failed parsing 'metadata' event: title=%s artist=%s album=%s dur=%d",
+			backend.trackTitle, backend.trackArtist, backend.trackAlbum, backend.durationMS)
+	}
+
+	msgErr := []byte(`{"type":"playback_error","data":{"uri":"spotify:track:song123","message":"CDN error","stage":"fetch"}}`)
+	backend.consumeEventsMock(msgErr)
+
+	if backend.playing || !strings.Contains(backend.lastError, "CDN error") {
+		t.Errorf("Failed parsing 'playback_error' event: playing=%v lastError=%s",
+			backend.playing, backend.lastError)
+	}
+}
+
+// 9. Verify External Spotify Connect / Spotify Jam playback is NOT overwritten by Coordinator.watchdogLoop
+func TestExternalPlaybackProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	st, err := store.Open(filepath.Join(tmpDir, "deckjam.db"))
+	if err != nil {
+		t.Fatalf("Open store failed: %v", err)
+	}
+	defer st.Close()
+
+	coord := NewCoordinator(st, "http://127.0.0.1:1", "auto")
+	defer coord.Close()
+
+	// Simulate external track playing on librespot backend
+	coord.librespot.mu.Lock()
+	coord.librespot.hasLoadedTrack = true
+	coord.librespot.playing = true
+	coord.librespot.paused = false
+	coord.librespot.currentURI = "spotify:track:jamTrack999"
+	coord.librespot.trackTitle = "Jamming Out"
+	coord.librespot.trackArtist = "DJ Jam"
+	coord.librespot.playOrigin = "spotify_connect"
+	coord.librespot.lastPlayTime = time.Now().Add(-10 * time.Second)
+	coord.librespot.mu.Unlock()
+
+	// DeckJam has a queued item in SQLite
+	qItem := &store.QueueItem{
+		SpotifyURI:  "spotify:track:queuedItem",
+		TrackID:     "queuedItem",
+		Title:       "Queued Item",
+		Artist:      "Queued Artist",
+		DurationMS:  180000,
+		AddedByID:   "guest1",
+		AddedByName: "Guest",
+	}
+	if err := st.AddToQueue(qItem, "round_robin"); err != nil {
+		t.Fatalf("AddToQueue failed: %v", err)
+	}
+
+	// Check IsExternalPlayback
+	if !coord.IsExternalPlayback("spotify:track:queuedItem") {
+		t.Fatalf("Expected IsExternalPlayback to be TRUE for remote Spotify Connect playback")
+	}
+
+	// ExternalNowPlaying must synthesize the remote track info
+	extNP := coord.ExternalNowPlaying()
+	if extNP == nil {
+		t.Fatalf("Expected ExternalNowPlaying to be non-nil")
+	}
+	if extNP.SpotifyURI != "spotify:track:jamTrack999" || extNP.Title != "Jamming Out" || extNP.AddedByName != "Spotify Connect" {
+		t.Fatalf("Unexpected ExternalNowPlaying item: %+v", extNP)
 	}
 }

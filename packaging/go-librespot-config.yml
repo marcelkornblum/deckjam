@@ -14,14 +14,13 @@ device_type: "speaker"
 audio_backend: "pipe"
 audio_output_pipe: "/tmp/deckjam-audio.fifo"
 audio_output_pipe_format: "s16le"
-audio_output_pipe_wait_for_reader: true
+audio_output_pipe_wait_for_reader: false
 
-# Zeroconf / Spotify Connect discovery (disabled in favor of 1-tap device_auth pairing)
-zeroconf_enabled: false
+# Zeroconf / Spotify Connect discovery: enabled so the phone app can see "Steam Deck Jam" locally on hotspot Wi-Fi
+zeroconf_enabled: true
 
-# Note: keep prefer_firewall_friendly_ports false (default :4070 AP connects in ~1s on phone hotspots,
-# whereas non-TLS handshakes on :443 get stalled/dropped by mobile carrier NATs).
-prefer_firewall_friendly_ports: false
+# Prefer firewall friendly ports: tries 443 first then 80 (avoids cellular carrier blocks on TCP 4070)
+prefer_firewall_friendly_ports: true
 
 # Disable autoplay so go-librespot cleanly emits stopped/not_playing at track end
 disable_autoplay: true

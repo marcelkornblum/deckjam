@@ -3,6 +3,7 @@ Description=go-librespot Spotify Connect Daemon for Steam Deck
 Documentation=https://github.com/devgianlu/go-librespot
 After=network.target sound.target deckjam.service
 Wants=deckjam.service
+PartOf=deckjam.service
 
 [Service]
 Type=simple
@@ -10,6 +11,9 @@ Environment=XDG_RUNTIME_DIR=%t
 Environment=PIPEWIRE_RUNTIME_DIR=%t
 Environment=PULSE_RUNTIME_PATH=%t/pulse
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+Environment=HTTP_PROXY=http://127.0.0.1:3679
+Environment=HTTPS_PROXY=http://127.0.0.1:3679
+Environment=NO_PROXY=127.0.0.1,localhost
 ExecStartPre=/bin/sh -c 'p="%t/deckjam-audio.fifo"; [ -p "$p" ] || { rm -f "$p"; mkfifo -m 0600 "$p"; }'
 ExecStart=%h/.local/bin/go-librespot --config_dir %h/.config/go-librespot
 Restart=on-failure

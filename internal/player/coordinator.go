@@ -80,7 +80,9 @@ func NewCoordinatorWithAudio(st *store.Store, librespotURL string, configuredBac
 		}
 	}
 
-	c.librespot = NewLibrespotBackend(librespotURL, onTrackEnded)
+	c.librespot = NewLibrespotBackendWithCallback(librespotURL, onTrackEnded, func() {
+		c.notifyStateChanged()
+	})
 	c.mpris = NewMPRISBackend(onTrackEnded)
 	c.mock = NewMockBackend(onTrackEnded)
 
@@ -154,6 +156,18 @@ func (c *Coordinator) watchdogLoop() {
 			}
 
 			status := c.GetStatus("")
+
+			// CRITICAL: Check if user is playing externally from their Spotify phone app or native Spotify Jam
+			npURI := ""
+			if np != nil {
+				npURI = np.SpotifyURI
+			}
+			if status.ActiveBackend == "librespot" && c.librespot.IsExternalPlayback(npURI) {
+				// The user or party is playing remotely via Spotify Connect / Jam on "Steam Deck Jam".
+				// DO NOT hijack their playback or overwrite with queue items!
+				continue
+			}
+
 			if np == nil {
 				settings, err := c.store.GetSettings()
 				if err == nil {
@@ -188,8 +202,8 @@ func (c *Coordinator) watchdogLoop() {
 						needsPlay = true
 						cooldown = 3500 * time.Millisecond
 					} else if c.audioBridge.Enabled() && !c.audioBridge.Stats().StreamActive {
-						// Transport is fetching encrypted audio over hotspot cellular — allow 18s uninterrupted CDN buffer window!
-						cooldown = 18 * time.Second
+						// Transport is fetching encrypted audio over hotspot cellular — allow 22s uninterrupted CDN buffer window!
+						cooldown = 22 * time.Second
 						needsPlay = true
 					} else {
 						// Real PCM is actively streaming! Reset retry counter.
@@ -668,4 +682,49 @@ func (c *Coordinator) Close() {
 			_ = c.audioBridge.Close()
 		}
 	})
+}
+
+// IsExternalPlayback reports whether playback is actively driven by external Spotify Connect / Jam.
+func (c *Coordinator) IsExternalPlayback(expectedDeckJamURI string) bool {
+	if c.librespot == nil {
+		return false
+	}
+	return c.librespot.IsExternalPlayback(expectedDeckJamURI)
+}
+
+// ExternalNowPlaying synthesizes a display QueueItem when external Spotify Connect or Jam is playing.
+func (c *Coordinator) ExternalNowPlaying() *store.QueueItem {
+	if c.librespot == nil {
+		return nil
+	}
+
+	info := c.librespot.GetExternalTrackInfo()
+	if info.URI == "" {
+		return nil
+	}
+
+	title := info.Title
+	if title == "" {
+		title = "Remote Spotify Track"
+	}
+	artist := info.Artist
+	if artist == "" {
+		artist = "Spotify Connect"
+	}
+
+	sourceName := "Spotify App"
+	if info.PlayOrigin != "" && info.PlayOrigin != "go-librespot" {
+		sourceName = "Spotify Connect"
+	}
+
+	return &store.QueueItem{
+		ID:          -1,
+		SpotifyURI:  info.URI,
+		Title:       title,
+		Artist:      artist,
+		Album:       info.Album,
+		DurationMS:  info.DurationMS,
+		AddedByName: sourceName,
+		Status:      "playing",
+	}
 }

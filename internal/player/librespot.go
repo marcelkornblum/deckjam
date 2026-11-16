@@ -12,6 +12,18 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// ExternalTrackInfo holds metadata about an actively loaded track in go-librespot.
+type ExternalTrackInfo struct {
+	URI         string
+	Title       string
+	Artist      string
+	Album       string
+	PositionMS  int
+	DurationMS  int
+	PlayOrigin  string
+	IsBuffering bool
+}
+
 // LibrespotBackend controls a local go-librespot daemon over HTTP REST and WebSocket events.
 // Conforms to go-librespot 0.10.5 OpenAPI specification.
 type LibrespotBackend struct {
@@ -22,8 +34,13 @@ type LibrespotBackend struct {
 	wsConn         *websocket.Conn
 	playing        bool
 	paused         bool
+	isBuffering    bool
 	hasLoadedTrack bool
 	currentURI     string
+	trackTitle     string
+	trackArtist    string
+	trackAlbum     string
+	playOrigin     string
 	positionMS     int
 	durationMS     int
 	volume         int
@@ -35,23 +52,30 @@ type LibrespotBackend struct {
 	lastPlayTime   time.Time
 	stopCh         chan struct{}
 	onTrackEnded   func()
+	onStateChange  func()
 }
 
 // NewLibrespotBackend creates a new LibrespotBackend instance.
 func NewLibrespotBackend(baseURL string, onTrackEnded func()) *LibrespotBackend {
+	return NewLibrespotBackendWithCallback(baseURL, onTrackEnded, nil)
+}
+
+// NewLibrespotBackendWithCallback creates a new LibrespotBackend instance with onStateChange callback.
+func NewLibrespotBackendWithCallback(baseURL string, onTrackEnded func(), onStateChange func()) *LibrespotBackend {
 	baseURL = strings.TrimRight(baseURL, "/")
 	if baseURL == "" {
 		baseURL = "http://127.0.0.1:3678"
 	}
 
 	b := &LibrespotBackend{
-		baseURL:      baseURL,
-		pollClient:   &http.Client{Timeout: 2500 * time.Millisecond},
-		cmdClient:    &http.Client{Timeout: 12 * time.Second},
-		volume:       80,
-		durationMS:   180000,
-		onTrackEnded: onTrackEnded,
-		stopCh:       make(chan struct{}),
+		baseURL:       baseURL,
+		pollClient:    &http.Client{Timeout: 2500 * time.Millisecond},
+		cmdClient:     &http.Client{Timeout: 12 * time.Second},
+		volume:        80,
+		durationMS:    180000,
+		onTrackEnded:  onTrackEnded,
+		onStateChange: onStateChange,
+		stopCh:        make(chan struct{}),
 	}
 
 	go b.monitorLoop()
@@ -129,10 +153,11 @@ func (b *LibrespotBackend) checkStatus() {
 	}
 
 	// 3. Poll GET /status (204 No Content when idle, 200 OK with track info when active)
-	var trackURI string
+	var trackURI, trackName, trackAlbum, trackArtist, playOrigin string
 	var trackPos, trackDur, volVal int
 	isPaused := false
 	isStopped := false
+	isBuffering := false
 	hasStatusUpdate := false
 	status204 := false
 	hasTrack := false
@@ -145,23 +170,37 @@ func (b *LibrespotBackend) checkStatus() {
 			if respStatus.StatusCode == http.StatusOK {
 				hasStatusUpdate = true
 				var statusData struct {
-					Stopped     bool `json:"stopped"`
-					Paused      bool `json:"paused"`
-					Volume      int  `json:"volume"`
-					VolumeSteps int  `json:"volume_steps"`
+					Stopped     bool    `json:"stopped"`
+					Paused      bool    `json:"paused"`
+					Buffering   bool    `json:"buffering"`
+					PlayOrigin  *string `json:"play_origin"`
+					Volume      int     `json:"volume"`
+					VolumeSteps int     `json:"volume_steps"`
 					Track       *struct {
-						URI      string `json:"uri"`
-						Position int    `json:"position"`
-						Duration int    `json:"duration"`
+						URI         string   `json:"uri"`
+						Name        string   `json:"name"`
+						AlbumName   string   `json:"album_name"`
+						ArtistNames []string `json:"artist_names"`
+						Position    int      `json:"position"`
+						Duration    int      `json:"duration"`
 					} `json:"track"`
 				}
 				if err := json.NewDecoder(respStatus.Body).Decode(&statusData); err == nil {
 					isStopped = statusData.Stopped
 					isPaused = statusData.Paused
+					isBuffering = statusData.Buffering
+					if statusData.PlayOrigin != nil {
+						playOrigin = *statusData.PlayOrigin
+					}
 					volVal = statusData.Volume
 					hasTrack = statusData.Track != nil && statusData.Track.URI != ""
 					if statusData.Track != nil {
 						trackURI = statusData.Track.URI
+						trackName = statusData.Track.Name
+						trackAlbum = statusData.Track.AlbumName
+						if len(statusData.Track.ArtistNames) > 0 {
+							trackArtist = strings.Join(statusData.Track.ArtistNames, ", ")
+						}
 						trackPos = statusData.Track.Position
 						trackDur = statusData.Track.Duration
 					}
@@ -189,6 +228,10 @@ func (b *LibrespotBackend) checkStatus() {
 		if volVal > 0 {
 			b.volume = volVal
 		}
+		if playOrigin != "" {
+			b.playOrigin = playOrigin
+		}
+		b.isBuffering = isBuffering
 		loadingGrace := time.Since(b.lastPlayTime) < 6*time.Second && b.lastError == "" && b.currentURI != ""
 		if status204 || isStopped || !hasTrack {
 			if !loadingGrace {
@@ -196,12 +239,24 @@ func (b *LibrespotBackend) checkStatus() {
 				b.paused = false
 				b.hasLoadedTrack = false
 				b.currentURI = ""
+				b.trackTitle = ""
+				b.trackArtist = ""
+				b.trackAlbum = ""
 			}
 		} else {
 			b.hasLoadedTrack = true
 			b.paused = isPaused
 			b.playing = !isPaused
 			b.currentURI = trackURI
+			if trackName != "" {
+				b.trackTitle = trackName
+			}
+			if trackArtist != "" {
+				b.trackArtist = trackArtist
+			}
+			if trackAlbum != "" {
+				b.trackAlbum = trackAlbum
+			}
 			if trackPos >= 0 {
 				b.positionMS = trackPos
 			}
@@ -211,6 +266,10 @@ func (b *LibrespotBackend) checkStatus() {
 		}
 	}
 	b.mu.Unlock()
+
+	if hasStatusUpdate && b.onStateChange != nil {
+		b.onStateChange()
+	}
 }
 
 // wsLoop manages persistent WebSocket connection to /events with auto-reconnect.
@@ -256,17 +315,34 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 		if err != nil {
 			return
 		}
+		b.processEventMessage(msg)
+	}
+}
 
-		// go-librespot event structure: {"event": "playing", "data": {...}}
-		var ev struct {
-			Event string          `json:"event"`
-			Data  json.RawMessage `json:"data"`
-		}
-		if err := json.Unmarshal(msg, &ev); err != nil {
-			continue
-		}
+// consumeEventsMock processes raw WebSocket JSON payloads in unit tests.
+func (b *LibrespotBackend) consumeEventsMock(msg []byte) {
+	b.processEventMessage(msg)
+}
 
-		switch ev.Event {
+func (b *LibrespotBackend) processEventMessage(msg []byte) {
+	// go-librespot event structure: {"type": "playing", "data": {...}}
+	// Fallback to "event" for backward compatibility if any client sent it.
+	var ev struct {
+		Type  string          `json:"type"`
+		Event string          `json:"event"`
+		Data  json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(msg, &ev); err != nil {
+		return
+	}
+	eventType := ev.Type
+	if eventType == "" {
+		eventType = ev.Event
+	}
+
+	stateChanged := false
+
+	switch eventType {
 		case "playback_ready":
 			b.mu.Lock()
 			b.daemonUp = true
@@ -275,54 +351,141 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 			b.pairURL = ""
 			b.lastError = ""
 			b.mu.Unlock()
+			stateChanged = true
 
 		case "playback_error", "playback_failed", "error":
 			var d struct {
-				Error   string `json:"error"`
-				Reason  string `json:"reason"`
-				Message string `json:"message"`
+				Error      string `json:"error"`
+				Reason     string `json:"reason"`
+				Message    string `json:"message"`
+				Stage      string `json:"stage"`
+				Kind       string `json:"kind"`
+				Uri        string `json:"uri"`
+				PlayOrigin string `json:"play_origin"`
 			}
 			errText := "Spotify playback error"
 			if json.Unmarshal(ev.Data, &d) == nil {
-				if d.Error != "" {
+				if d.Message != "" {
+					errText = d.Message
+				} else if d.Error != "" {
 					errText = d.Error
 				} else if d.Reason != "" {
 					errText = d.Reason
-				} else if d.Message != "" {
-					errText = d.Message
+				}
+				if d.Stage != "" {
+					errText = fmt.Sprintf("[%s] %s", d.Stage, errText)
 				}
 			}
 			b.mu.Lock()
 			b.playing = false
 			b.paused = false
 			b.hasLoadedTrack = false
+			b.isBuffering = false
 			b.lastError = errText
 			b.mu.Unlock()
+			stateChanged = true
+
+		case "will_play":
+			var d struct {
+				URI        string `json:"uri"`
+				PlayOrigin string `json:"play_origin"`
+			}
+			if json.Unmarshal(ev.Data, &d) == nil {
+				b.mu.Lock()
+				b.isBuffering = true
+				if d.URI != "" {
+					b.currentURI = d.URI
+					b.hasLoadedTrack = true
+				}
+				if d.PlayOrigin != "" {
+					b.playOrigin = d.PlayOrigin
+				}
+				b.mu.Unlock()
+				stateChanged = true
+			}
 
 		case "playing":
+			var d struct {
+				URI        string `json:"uri"`
+				PlayOrigin string `json:"play_origin"`
+			}
 			b.mu.Lock()
 			b.playing = true
 			b.paused = false
+			b.isBuffering = false
 			b.hasLoadedTrack = true
 			b.lastError = ""
-			var d struct {
-				URI string `json:"uri"`
-			}
-			if json.Unmarshal(ev.Data, &d) == nil && d.URI != "" {
-				b.currentURI = d.URI
+			if json.Unmarshal(ev.Data, &d) == nil {
+				if d.URI != "" {
+					b.currentURI = d.URI
+				}
+				if d.PlayOrigin != "" {
+					b.playOrigin = d.PlayOrigin
+				}
 			}
 			b.mu.Unlock()
+			stateChanged = true
+
+		case "metadata":
+			var d struct {
+				URI         string   `json:"uri"`
+				Name        string   `json:"name"`
+				AlbumName   string   `json:"album_name"`
+				ArtistNames []string `json:"artist_names"`
+				Duration    int      `json:"duration"`
+				Position    int64    `json:"position"`
+			}
+			if json.Unmarshal(ev.Data, &d) == nil {
+				b.mu.Lock()
+				if d.URI != "" {
+					b.currentURI = d.URI
+					b.hasLoadedTrack = true
+				}
+				if d.Name != "" {
+					b.trackTitle = d.Name
+				}
+				if d.AlbumName != "" {
+					b.trackAlbum = d.AlbumName
+				}
+				if len(d.ArtistNames) > 0 {
+					b.trackArtist = strings.Join(d.ArtistNames, ", ")
+				}
+				if d.Duration > 0 {
+					b.durationMS = d.Duration
+				}
+				if d.Position >= 0 {
+					b.positionMS = int(d.Position)
+				}
+				b.mu.Unlock()
+				stateChanged = true
+			}
 
 		case "paused":
 			b.mu.Lock()
 			b.paused = true
+			b.playing = false
+			b.isBuffering = false
+			var d struct {
+				URI        string `json:"uri"`
+				PlayOrigin string `json:"play_origin"`
+			}
+			if json.Unmarshal(ev.Data, &d) == nil {
+				if d.URI != "" {
+					b.currentURI = d.URI
+				}
+				if d.PlayOrigin != "" {
+					b.playOrigin = d.PlayOrigin
+				}
+			}
 			b.mu.Unlock()
+			stateChanged = true
 
 		case "seek":
 			var d struct {
-				Position int    `json:"position"`
-				Duration int    `json:"duration"`
-				URI      string `json:"uri"`
+				Position   int    `json:"position"`
+				Duration   int    `json:"duration"`
+				URI        string `json:"uri"`
+				PlayOrigin string `json:"play_origin"`
 			}
 			if json.Unmarshal(ev.Data, &d) == nil {
 				b.mu.Lock()
@@ -333,7 +496,11 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 				if d.URI != "" {
 					b.currentURI = d.URI
 				}
+				if d.PlayOrigin != "" {
+					b.playOrigin = d.PlayOrigin
+				}
 				b.mu.Unlock()
+				stateChanged = true
 			}
 
 		case "volume":
@@ -344,22 +511,28 @@ func (b *LibrespotBackend) consumeEvents(conn *websocket.Conn) {
 				b.mu.Lock()
 				b.volume = d.Value
 				b.mu.Unlock()
+				stateChanged = true
 			}
 
 		case "not_playing", "stopped":
 			b.mu.Lock()
 			b.playing = false
 			b.paused = false
+			b.isBuffering = false
 			b.hasLoadedTrack = false
 			recentPlay := time.Since(b.lastPlayTime) < 1500*time.Millisecond
 			b.mu.Unlock()
+			stateChanged = true
 
 			// Advance queue cleanly without double-advancing when Play() just switched tracks within the last 1.5s
 			if !recentPlay && b.onTrackEnded != nil {
 				go b.onTrackEnded()
 			}
 		}
-	}
+
+		if stateChanged && b.onStateChange != nil {
+			b.onStateChange()
+		}
 }
 
 // PairInfo returns pairing code, pair URL, and daemon reachability.
@@ -408,6 +581,53 @@ func (b *LibrespotBackend) HasLoadedTrack(uri string) bool {
 		return false
 	}
 	return uri == "" || b.currentURI == uri
+}
+
+// IsExternalPlayback reports whether playback was initiated by a remote Spotify app / native Jam session
+// rather than DeckJam's automated queue engine.
+func (b *LibrespotBackend) IsExternalPlayback(expectedDeckJamURI string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if !b.hasLoadedTrack || (!b.playing && !b.paused) {
+		return false
+	}
+
+	// 1. If playOrigin was reported and is NOT DeckJam / "go-librespot", it is external (e.g. "spotify_connect", "social_connect", etc.)
+	if b.playOrigin != "" && b.playOrigin != "go-librespot" {
+		return true
+	}
+
+	// 2. If DeckJam expected a specific URI from its queue, but librespot is playing a different URI
+	// and DeckJam hasn't issued a Play command in the last 5 seconds, the user switched tracks externally.
+	if b.currentURI != "" && expectedDeckJamURI != "" && b.currentURI != expectedDeckJamURI && time.Since(b.lastPlayTime) > 5*time.Second {
+		return true
+	}
+
+	// 3. If DeckJam has no active playing queue item (expectedDeckJamURI is empty) but librespot is active,
+	// the user tapped "Connect" from their Spotify app to play music.
+	if b.currentURI != "" && expectedDeckJamURI == "" {
+		return true
+	}
+
+	return false
+}
+
+// GetExternalTrackInfo returns track metadata loaded in go-librespot.
+func (b *LibrespotBackend) GetExternalTrackInfo() ExternalTrackInfo {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	return ExternalTrackInfo{
+		URI:         b.currentURI,
+		Title:       b.trackTitle,
+		Artist:      b.trackArtist,
+		Album:       b.trackAlbum,
+		PositionMS:  b.positionMS,
+		DurationMS:  b.durationMS,
+		PlayOrigin:  b.playOrigin,
+		IsBuffering: b.isBuffering,
+	}
 }
 
 func (b *LibrespotBackend) Play(uri string) error {

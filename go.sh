@@ -144,4 +144,6 @@ elif [ -n "$PAIR_CODE" ]; then
 else
     echo "Spotify Engine: Starting / connecting to Spotify AP..."
 fi
+echo "  - Spotify App / Jam : Open Spotify -> tap Devices -> select 'Steam Deck Jam' (or tap Start a Jam!)"
+echo "  - Or Queue Online   : Open $JOIN_URL on any phone -> paste any Spotify link"
 echo "=========================================================="

@@ -149,7 +149,7 @@ CONFIG_SRC="$REPO_ROOT/packaging/go-librespot-config.yml"
 NEEDS_CONFIG_UPDATE=0
 if [ ! -f "$CONFIG_FILE" ] || [ "$FORCE" -eq 1 ]; then
     NEEDS_CONFIG_UPDATE=1
-elif grep -Eq 'type: "zeroconf"|audio_backend: "pulseaudio"|prefer_firewall_friendly_ports: true|normalisation_enabled:' "$CONFIG_FILE" 2>/dev/null; then
+elif grep -Eq 'type: "zeroconf"|audio_backend: "pulseaudio"|prefer_firewall_friendly_ports: false|zeroconf_enabled: false|audio_output_pipe_wait_for_reader: true|normalisation_enabled:' "$CONFIG_FILE" 2>/dev/null; then
     echo "    Upgrading $CONFIG_FILE to verified PipeWire FIFO bridge configuration..."
     NEEDS_CONFIG_UPDATE=1
 fi
@@ -179,6 +179,7 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload || true
     systemctl --user enable deckjam.service go-librespot.service deckjam-tunnel.service 2>/dev/null || true
     systemctl --user restart deckjam.service 2>/dev/null || true
+    sleep 0.5
     systemctl --user restart go-librespot.service 2>/dev/null || true
     systemctl --user restart deckjam-tunnel.service 2>/dev/null || true
 fi

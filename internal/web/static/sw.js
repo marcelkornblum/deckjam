@@ -1,5 +1,5 @@
 // DeckJam Service Worker - Offline Shell Caching
-const CACHE_NAME = 'deckjam-shell-v2';
+const CACHE_NAME = 'deckjam-shell-v3';
 
 const STATIC_ASSETS = [
   '/',

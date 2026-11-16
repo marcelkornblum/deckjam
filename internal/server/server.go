@@ -212,6 +212,15 @@ func (s *Server) getSnapshot(guestID string, isHost bool) (StateSnapshot, error)
 	joinURL, lanURLs := DetectNetworkURLs(s.port, s.hostname, s.dataDir)
 
 	np, _ := s.store.GetNowPlaying(guestID)
+	expectedURI := ""
+	if np != nil {
+		expectedURI = np.SpotifyURI
+	}
+	if s.coordinator != nil && (np == nil || s.coordinator.IsExternalPlayback(expectedURI)) {
+		if extNP := s.coordinator.ExternalNowPlaying(); extNP != nil {
+			np = extNP
+		}
+	}
 	queued, _ := s.store.GetQueuedItems(settings.QueueMode, guestID)
 	history, _ := s.store.GetHistory(guestID)
 	fallbackCount, _ := s.store.CountFallbackTracks()

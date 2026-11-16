@@ -41,6 +41,7 @@ func main() {
 	testAudioFlag := flag.Bool("test-audio", false, "Play a 0.7s stereo verification chime to SteamOS audio out and exit")
 	hostPINFlag := flag.String("host-pin", getEnv("DECKJAM_HOST_PIN", ""), "Host PIN override (optional; 4-digit PIN generated in SQLite if unset)")
 	hostnameFlag := flag.String("hostname", getEnv("DECKJAM_HOSTNAME", ""), "Hostname override for join URL (default auto-detected LAN IP)")
+	ipv4ProxyFlag := flag.String("ipv4-proxy", getEnv("DECKJAM_IPV4_PROXY", "127.0.0.1:3679"), "Listen address for go-librespot IPv4 forward proxy (empty to disable)")
 	qrFlag := flag.String("qr", "", "Print terminal QR code for the given URL/string to stdout and exit")
 
 	flag.Parse()
@@ -95,8 +96,23 @@ func main() {
 	}
 	defer st.Close()
 
+	if resetCount, rErr := st.ResetPlayingToQueued(); rErr == nil && resetCount > 0 {
+		log.Printf("Reset %d stale playing track(s) to queued from previous session", resetCount)
+	}
+
 	if removed, dErr := st.DeduplicateActiveQueue(); dErr == nil && removed > 0 {
 		log.Printf("Cleaned %d duplicate active queue entries from previous session", removed)
+	}
+
+	// Start local IPv4 forward proxy for go-librespot to protect against broken mobile hotspot IPv6
+	if *ipv4ProxyFlag != "" && *backendFlag != "mock" {
+		proxyCloser, listenAddr, pErr := player.StartIPv4Proxy(*ipv4ProxyFlag)
+		if pErr != nil {
+			log.Printf("[ipv4proxy] Warning: Failed to start IPv4 proxy on %s: %v", *ipv4ProxyFlag, pErr)
+		} else {
+			log.Printf("[ipv4proxy] Started go-librespot pure-IPv4 forward proxy on http://%s", listenAddr)
+			defer proxyCloser.Close()
+		}
 	}
 
 	// Update backend setting if specified in flag

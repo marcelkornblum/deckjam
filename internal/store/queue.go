@@ -660,3 +660,19 @@ func (s *Store) DeduplicateActiveQueue() (int, error) {
 	return len(dupIDs), nil
 }
 
+// ResetPlayingToQueued resets any stuck 'playing' items back to 'queued' on daemon startup.
+// This prevents prior session hangs from hijacking the player when fresh playback begins.
+func (s *Store) ResetPlayingToQueued() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(`UPDATE queue_items SET status = 'queued' WHERE status = 'playing'`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reset playing tracks to queued: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(rows), nil
+}
